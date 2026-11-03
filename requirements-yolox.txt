@@ -1,0 +1,9 @@
+# Install the appropriate torch/torchvision CUDA pair separately; see README.
+loguru
+tqdm
+tabulate
+thop
+pycocotools
+Pillow
+matplotlib
+ninja

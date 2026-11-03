@@ -1,0 +1,42 @@
+{
+  "params": {
+    "DET": 0.2481218260059,
+    "EV": 0.6746522200792,
+    "HEAD_FRACTION": 0.1843326829839,
+    "IOU": 0.2949855384151,
+    "LOW": 0.1017032321806,
+    "MAX_AGE": 160,
+    "MIN_HITS": 3,
+    "NMS": 0.6011511980793,
+    "ADMISSIBLE": false,
+    "LIFECYCLE": true,
+    "BIRTH_POLICY": "axis",
+    "NOISE": false,
+    "COAST_MODE": "budget",
+    "MEASURE": "raw",
+    "LOW_POLICY": "legacy",
+    "ASSOCIATION": "iou",
+    "INIT": 0.0,
+    "LOW_OUTPUT": "all",
+    "OUTPUT_FILTER": "none",
+    "RECOVERY": false,
+    "LOST_BIRTH": "veto"
+  },
+  "fixed_structure": {
+    "explain": true,
+    "lamp": false,
+    "emit": true,
+    "free": true,
+    "birth": true,
+    "inherit": false,
+    "own": false,
+    "reid": false,
+    "low": true,
+    "birth_lost": false,
+    "diag_cap": false,
+    "diag_near": false,
+    "diag_close": false,
+    "gate": "axis",
+    "rho": null
+  }
+}

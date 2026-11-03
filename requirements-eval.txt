@@ -1,0 +1,6 @@
+# Same upstream TrackEval commit as the historical experiments.
+trackeval @ git+https://github.com/JonathonLuiten/TrackEval.git@12c8791b303e0a0b50f753af204249e622d0281a
+# TrackEval imports several dataset adapters at package import time.
+matplotlib
+Pillow
+pycocotools

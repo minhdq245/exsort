@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exsort-research"
+version = "0.1.0"
+description = "Explained-absence multi-object tracking with cached validation tuning"
+requires-python = ">=3.10,<3.13"
+dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<1.16", "filterpy==1.4.5", "lap==0.5.13", "opencv-python>=4.8,<6", "psutil>=5.9"]
+
+[project.optional-dependencies]
+tune = ["smac==2.4.1", "ConfigSpace==1.2.2"]
+
+[project.scripts]
+exsort = "exsort.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["exsort*"]

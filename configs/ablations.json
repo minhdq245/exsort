@@ -1,0 +1,8 @@
+{
+  "no_recovery": {"RECOVERY": false},
+  "lost_veto": {"LOST_BIRTH": "veto"},
+  "raw_measurement": {"MEASURE": "raw"},
+  "no_coasting": {"COAST_MODE": "none"},
+  "birth_uses_det": {"INIT": 0.0},
+  "strict_low": {"LOW_POLICY": "strict"}
+}

@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# Preserve the exact third-party bytes recorded in source_provenance.json.
+exsort/vendor/ocsort/*.py -text -whitespace

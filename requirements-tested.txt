@@ -1,0 +1,10 @@
+# Constraints from the local environment used to verify this release.
+numpy==2.2.6
+scipy==1.15.3
+filterpy==1.4.5
+lap==0.5.13
+opencv-python==5.0.0.93
+psutil==7.2.2
+smac==2.4.1
+ConfigSpace==1.2.2
+scikit-learn==1.7.2

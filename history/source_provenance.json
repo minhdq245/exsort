@@ -1,0 +1,22 @@
+{
+  "exsort/core.py": {
+    "original_sha256": "1ff01518e047ec092d65bcf2765827fc82ec71fffb0fff079d88dab801cdf5d9",
+    "change": "Package-relative imports only; tracker logic unchanged."
+  },
+  "exsort/legacy.py": {
+    "original_sha256": "1bf1e5a41fc96628238d6de85b639ebead62cc3162967e21c7f49f767fca2bb8",
+    "change": "Package-relative imports only; tracker logic unchanged."
+  },
+  "exsort/vendor/ocsort/association.py": {
+    "sha256": "4a9449c8257e53d058405f4bcc1332ce077556838817d7882ed566afcbd10bc6",
+    "origin": "OC-SORT, local research dependency; retained byte-for-byte"
+  },
+  "exsort/vendor/ocsort/ocsort.py": {
+    "sha256": "9f7ce56c74e41864ee1d17d05eca962a5b06c1474eb96155dd99f930f1cdf7da",
+    "origin": "OC-SORT, local research dependency; retained byte-for-byte"
+  },
+  "exsort/vendor/ocsort/kalmanfilter.py": {
+    "sha256": "291214fa76864310ab9cafb4a890b03aa0eb7fb5d8406f11d447993619c1bb4f",
+    "origin": "OC-SORT, local research dependency; retained byte-for-byte"
+  }
+}
