@@ -20,6 +20,7 @@ def main():
     p.add_argument("--snapshot-dir", required=True)
     p.add_argument("--halo-dev", required=True)
     p.add_argument("--config", default="configs/selected.json")
+    p.add_argument("--fps", type=float, default=22, help="Frame rate of the synthetic sequence")
     args = p.parse_args()
     sys.path.insert(0, args.halo_dev)
     sys.path.insert(0, args.snapshot_dir)
@@ -27,11 +28,17 @@ def main():
     original = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(original)
     config = read(args.config)
-    for k, v in config["params"].items():
+    params = dict(config["params"])
+    fps_budget = params["COAST_MODE"] == "fps_budget"
+    if fps_budget:
+        params["COAST_MODE"] = "budget"
+    for k, v in params.items():
         setattr(original, k, v)
     original.OPTS.clear()
     original.OPTS.update(config["fixed_structure"])
-    a, b = original.EXSORT(), create_tracker(config)
+    a, b = original.EXSORT(), create_tracker(config, fps=args.fps)
+    if fps_budget:
+        a.emission = lambda t: a._localised(t) and t.kf.time_since_update <= (2 if t.now else 1) * args.fps
     rng = np.random.default_rng(20261030)
     compared = 0
     for frame in range(1, 401):

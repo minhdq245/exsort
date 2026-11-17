@@ -11,7 +11,7 @@ MASK = dict(width=512, height=512, V_min=235, S_max=89, resize="INTER_AREA-befor
 
 def image_identity(manifest):
     return key(dict(role=manifest["role"], split=manifest["split_signature"],
-                    sequences={s: {k: v for k, v in q.items() if k != "gt_sha256"}
+                    sequences={s: {k: v for k, v in q.items() if k not in ("gt_sha256", "fps")}
                                for s, q in manifest["sequences"].items()}))
 
 

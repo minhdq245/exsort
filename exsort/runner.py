@@ -7,12 +7,23 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 from pathlib import Path
 import numpy as np
-from .api import create_tracker, validate
+from .api import create_tracker, require_fps, validate
 from .cache import open_cache, verify
-from .dataset import current_gt
+from .dataset import current_gt, sequence_fps
 from .geometry import norm_box_to_xyxy
 from .io import key, read, save, sha, source_signature
 from . import scoring
+
+
+def replay_fps(manifest, name):
+    q = manifest["sequences"][name]
+    fps = q.get("fps")
+    if fps is None:
+        fps = sequence_fps(Path(manifest["data_root"]) / q["split"] / name)
+    try:
+        return require_fps(fps)
+    except ValueError as exc:
+        raise ValueError(f"{name}: {exc}. Supply FPS in meta/DONE.json or seqinfo.ini.") from exc
 
 
 def track_one(job):
@@ -28,7 +39,8 @@ def track_one(job):
         if d["identity"] != track_identity or sha(target) != d["sha256"]:
             raise ValueError("Completed tracking result changed")
         return d
-    model = create_tracker(config)
+    fps = replay_fps(manifest, name) if config["params"]["COAST_MODE"] == "fps_budget" else None
+    model = create_tracker(config, fps=fps)
     checkpoint = folder / "checkpoint.pkl.gz"
     current, position = 0, 0
     if checkpoint.exists():
@@ -125,25 +137,31 @@ def trackeval_version():
     return metadata.version("trackeval")
 
 
-def worker_manifest(manifest, name):
+def worker_manifest(manifest, name, fps=None):
     # Avoid pickling every image filename/fingerprint for every sequence/trial.
     q = manifest["sequences"][name]
-    return dict(data_root=manifest["data_root"], role=manifest["role"],
-                sequences={name: {k: v for k, v in q.items() if k not in ("images", "image_fingerprint")}})
+    q = {k: v for k, v in q.items() if k not in ("images", "image_fingerprint")}
+    if fps is not None:
+        q["fps"] = fps
+    return dict(data_root=manifest["data_root"], role=manifest["role"], sequences={name: q})
 
 
 def replay(manifest, cache, config, output, workers=4, pool=None, validated=False):
     config = validate(config)
+    fps_by_sequence = {}
+    if config["params"]["COAST_MODE"] == "fps_budget":
+        fps_by_sequence = {s: replay_fps(manifest, s) for s in manifest["sequences"]}
     output = Path(output)
     meta = open_cache(cache, manifest) if validated else verify(cache, manifest)
     if config["params"]["LOW"] < meta["score_floor"] or config["params"]["NMS"] > meta["nms"]:
         raise ValueError("Config requires detections removed by the cache")
     blocks = {s: read(Path(cache)/s/"index.json")["blocks"] for s in manifest["sequences"]}
     track_identity = key(dict(cache=meta["identity"], blocks=blocks, config=config, source=source_signature(),
+                              fps_by_sequence=fps_by_sequence,
                               decimals=2 if manifest["role"] == "val" else 4))
     protocol = dict(manifest_signature=manifest["signature"], role=manifest["role"],
                     cache_identity=meta["identity"], config=config, source_signature=source_signature(),
-                    track_identity=track_identity, trackeval_version=trackeval_version())
+                    track_identity=track_identity, trackeval_version=trackeval_version(), fps_by_sequence=fps_by_sequence)
     pp = output / "protocol.json"
     if pp.exists() and read(pp) != protocol:
         raise ValueError("Run inputs changed. Use a new output directory.")
@@ -151,7 +169,7 @@ def replay(manifest, cache, config, output, workers=4, pool=None, validated=Fals
     own_pool = pool is None
     pool = pool or ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"))
     try:
-        jobs = [(worker_manifest(manifest, s), str(cache), config, str(output), s, track_identity)
+        jobs = [(worker_manifest(manifest, s, fps_by_sequence.get(s)), str(cache), config, str(output), s, track_identity)
                 for s in sorted(manifest["sequences"], key=lambda s: -manifest["sequences"][s]["frames"])]
         tracked = [f.result() for f in as_completed([pool.submit(track_one, j) for j in jobs])]
         if any(r.get("paused") for r in tracked):

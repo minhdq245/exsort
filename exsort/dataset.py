@@ -1,8 +1,27 @@
 """Dense, sequence-disjoint train/test manifests with temporal tracker validation."""
+from configparser import ConfigParser
 from pathlib import Path
 import cv2
 import numpy as np
 from .io import key, read, save, sha
+
+
+def sequence_fps(folder):
+    """Read the rate of the extracted frames used by the tracker."""
+    folder = Path(folder)
+    metadata = folder / "meta/DONE.json"
+    if metadata.is_file():
+        fps = read(metadata).get("output_integer_fps")
+        if fps is not None:
+            return fps
+    for path in (folder / "seqinfo.ini", folder / "mot/seqinfo.ini"):
+        if path.is_file():
+            info = ConfigParser(interpolation=None)
+            info.read(path, encoding="utf-8-sig")
+            fps = info.getfloat("Sequence", "frameRate", fallback=None)
+            if fps is not None:
+                return fps
+    return None
 
 
 def load_gt(path, nframes):
@@ -71,6 +90,9 @@ def prepare(data, split_path, role, output, full_hash=False):
         sequences[s] = dict(split=physical, n_total=len(images), start=first, frames=len(selected),
                             width=w, height=h, images=[p.name for p in selected],
                             image_fingerprint=fingerprint, gt_sha256=sha(gt))
+        fps = sequence_fps(folder)
+        if fps is not None:
+            sequences[s]["fps"] = fps
         print(f"Indexed {role}: {s} ({len(selected)} frames)", flush=True)
     manifest = dict(schema=1, role=role, data_root=str(data), split=names,
                     split_signature=key(names), sequences=sequences,

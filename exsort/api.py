@@ -6,7 +6,7 @@ from . import core
 NUMERIC = {"DET", "LOW", "NMS", "IOU", "MIN_HITS", "MAX_AGE", "HEAD_FRACTION", "EV", "INIT"}
 ENUMS = {
     "BIRTH_POLICY": {"axis", "mixed", "iom_active", "iou"},
-    "COAST_MODE": {"legacy", "budget", "none", "uncertainty", "high_anchor", "last_high"},
+    "COAST_MODE": {"legacy", "budget", "fps_budget", "none", "uncertainty", "high_anchor", "last_high"},
     "MEASURE": {"raw", "posterior", "blend"}, "LOW_POLICY": {"legacy", "strict"},
     "ASSOCIATION": {"iou", "hmiou", "score"},
     "LOW_OUTPUT": {"all", "high_anchor", "prior"},
@@ -51,11 +51,19 @@ def validate(config):
     return config
 
 
-def create_tracker(config):
+def require_fps(fps):
+    if type(fps) not in (float, int) or not math.isfinite(fps) or fps <= 0:
+        raise ValueError("The FPS-based output policy requires a positive sequence FPS")
+    return fps
+
+
+def create_tracker(config, *, fps=None):
     """Globals mirror the frozen snapshots; use processes for different configurations."""
     config = validate(config)
+    if config["params"]["COAST_MODE"] == "fps_budget":
+        fps = require_fps(fps)
     for k, v in config["params"].items():
         setattr(core, k, v)
     core.OPTS.clear()
     core.OPTS.update(config["fixed_structure"])
-    return core.EXSORT()
+    return core.EXSORT(fps=fps)

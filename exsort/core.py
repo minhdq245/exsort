@@ -85,7 +85,8 @@ class Track(L.Track):
         return xyxy_to_norm_box(b,self.W,self.H)
 
 class EXSORT(L.EXSORT):
-    def __init__(self):
+    def __init__(self, fps=None):
+        self.fps = fps
         OPTS.update(admissible=ADMISSIBLE,lifecycle=LIFECYCLE,birth_policy=BIRTH_POLICY,noise=NOISE,coast=COAST_MODE)
         for k in ('DET','LOW','NMS','IOU','MIN_HITS','MAX_AGE','HEAD_FRACTION','EV'):setattr(L,k,globals()[k])
         L.OPTS.clear();L.OPTS.update(OPTS)
@@ -105,6 +106,9 @@ class EXSORT(L.EXSORT):
             return inter/max(area,np.finfo(float).eps)>=IOU
         return float(iou_batch(np.asarray(b,np.float32)[None],t.box[None])[0,0])>=IOU
     def emission(self,t):
+        if OPTS["coast"] == "fps_budget":
+            seconds = 2 if t.now else 1
+            return OPTS["emit"] and self._localised(t) and t.kf.time_since_update <= seconds * self.fps
         if not OPTS['emit'] or not t.now or not self._localised(t):return False
         mode=OPTS['coast']
         if mode in ('high_anchor','last_high'):

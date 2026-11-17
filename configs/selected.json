@@ -12,7 +12,7 @@
     "LIFECYCLE": true,
     "BIRTH_POLICY": "axis",
     "NOISE": false,
-    "COAST_MODE": "budget",
+    "COAST_MODE": "fps_budget",
     "MEASURE": "posterior",
     "LOW_POLICY": "legacy",
     "ASSOCIATION": "iou",

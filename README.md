@@ -2,7 +2,20 @@
 
 **exsort** là bộ theo dõi người dùng chuyển động, detection confidence thấp và bằng chứng chói sáng để xử lý mất detection. Bản được chọn **không dùng ReID**, không cập nhật tâm người theo tâm đèn. Repo chứa thuật toán mới nhất, cấu hình đã chọn, cache detector/mask, Bayesian tuning trên val và đánh giá bằng TrackEval trên test.
 
-Tên method: **exsort**. HALO-SORT là tên dự án nghiên cứu trước đây.
+## Pipeline inference của cấu hình chính thức
+
+`configs/selected.json` dùng **1 giây khi vùng đầu box dự đoán nằm ngoài mask bão hòa** và **2 giây khi vùng đầu chạm mask**. Thời gian tính từ lần ghép detection cuối, theo FPS của từng sequence.
+
+1. **Đọc đủ frame theo thứ tự.** Chuẩn bị detection người từ YOLOX-X và tính mask bão hòa HSV ở kích thước 512 × 512. Có thể lấy cả hai từ cache. Mask đánh dấu pixel thỏa `V ≥ 235` và `S ≤ 89`.
+2. **Dự đoán và ghép.** Score từ 0,25214 trở lên thuộc nhóm high, score từ 0,10128 đến dưới 0,25214 thuộc nhóm low. NMS tại ngưỡng 0,60224 áp dụng cho nhóm high. Mỗi track tiến Kalman một frame. Ghép high detection với track đã xác nhận bằng IoU, thử box dự đoán rồi box quan sát cuối. Ghép low detection với các track đã xác nhận còn thiếu quan sát. Sau đó ghép high detection còn dư với track mới đang chờ xác nhận.
+3. **Cập nhật, tạo và giữ track.** Detection ghép được cập nhật Kalman và reset bộ đếm mất dấu. High detection còn dư cần score ít nhất 0,4 và qua kiểm tra trùng để tạo track. Sau ba high hit liên tiếp, track được xác nhận. Khi confirmed track mất detection, kiểm tra mask trong khoảng 18,4% phía trên box dự đoán. Track hết hạn khi số frame miss chưa được glare giải thích vượt 160. Một track mới vừa xác nhận có thể lấy lại ID nếu đúng một track cũ đang mất dấu phù hợp.
+4. **Xuất box và ID.** Track confirmed có detection ghép xuất box sau cập nhật Kalman. Track confirmed đang mất detection chỉ xuất box dự đoán nếu còn trong mốc 1/2 giây và IoU với detection đã ghép gần nhất đạt `EV ≈ 0,72337`. Sau khi hết thời hạn xuất, track còn sống vẫn có thể ghép lại detection bằng ID cũ.
+
+CLI đọc FPS từ manifest. Khi chuẩn bị manifest, FPS của ảnh trích lấy từ `meta/DONE.json` (trường `output_integer_fps`) hoặc `seqinfo.ini` (trường `frameRate` trong mục `[Sequence]`). Manifest cũ có thể lấy FPS từ các file metadata này khi replay. API Python nhận FPS tại `create_tracker(config, fps=fps)`. Dùng một tracker mới cho mỗi sequence và gọi `step()` cả ở frame trống. [Sơ đồ, tham số và ví dụ Python](docs/METHOD.md)
+
+Nếu chạy bằng CLI, tạo manifest bằng `prepare`, tạo đầu vào bằng `cache` hoặc `import-cache`, rồi replay bằng `validate` trên val hoặc `evaluate` trên test với cấu hình đã khóa. Kết quả MOT nằm trong `trackers/exsort/data/` của thư mục run.
+
+## Quy trình đánh giá
 
 ```text
 GlareMOT/images + person detector
@@ -75,7 +88,7 @@ $Data = "D:\datasets\GlareMOT2 full"
 python -m exsort prepare --data "$Data" --split configs/split_seed20261024.json --role val --output runs/manifests/val.json
 ```
 
-Manifest ghi tên ảnh, thứ tự, kích thước, mtime, hash ảnh đầu/cuối và SHA256 GT. Thêm `--hash-images` nếu cần SHA256 của **mọi ảnh** để audit nghiêm ngặt; bước này đọc toàn bộ ảnh và tốn I/O. Chế độ mặc định không chứng minh nội dung mọi ảnh nếu ai đó thay file nhưng cố tình giữ nguyên size/mtime.
+Manifest ghi tên ảnh, thứ tự, kích thước, mtime, hash ảnh đầu/cuối, SHA256 GT và FPS khi có metadata. Thêm `--hash-images` để tính SHA256 của **mọi ảnh**.
 
 Nên chuẩn bị manifest test sau khi đã chốt val ở bước 7.
 
@@ -254,14 +267,21 @@ Hai manifest phải có image/timeline signature giống nhau. Nếu ảnh/frame
 
 ## Cấu hình và kết quả tham chiếu
 
-`configs/selected.json` là cấu hình mới nhất đã chọn trong vòng nghiên cứu cũ. [METHOD.md](docs/METHOD.md) mô tả rõ từng cơ chế và toàn bộ tham số; không gọi phiên bản này là “chỉ 7 tham số”.
+`configs/selected.json` là cấu hình chính thức từ 17/11/2026. Cùng cache YOLOX-X epoch 15, hai cấu hình được chấm trên 48 sequence, 118.632 frame và 114.097 box GT. Các tỷ lệ trong bảng tính theo phần trăm.
+
+| Cấu hình | HOTA ↑ | DetA ↑ | AssA ↑ | IDF1 ↑ | MOTA ↑ | IDSW ↓ | FP ↓ | FN ↓ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| exsort trước khi áp mốc theo FPS | 56,52 | 59,12 | 55,38 | 71,65 | 76,63 | 40 | 7.006 | 19.621 |
+| exsort 1 giây ngoài mask, 2 giây chạm mask | 56,43 | 58,96 | 55,37 | 71,45 | 75,95 | 28 | 8.380 | 19.034 |
+
+Mốc 1/2 giây đã được thử trên val và được chọn làm cấu hình chính thức sau khi xem kết quả test. Bản này giảm FN và ID switch trong chuỗi output, đồng thời tăng FP và giảm MOTA. Xem [lịch sử tuning](docs/TUNING.md) để phân biệt các vòng đánh giá.
 
 **Các điểm dưới đây thuộc GT snapshot của lượt chạy 28–29/10/2026, trước lần sửa annotation 31/10–01/11. Chúng không phải kết quả trên GT hiện tại.**
 
 | Method, test cũ | IDSW | HOTA↑ | DetA↑ | AssA↑ | IDF1↑ | MOTA↑ | FP↓ | FN↓ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | TrackTrack full ReID |131|53,8074|60,5060|49,4444|63,1429|78,6141|4.743|19.427|
-| exsort mới nhất, không ReID |39|57,0077|59,7425|55,5639|71,7511|76,8373|7.066|19.215|
+| exsort snapshot 29/10 |39|57,0077|59,7425|55,5639|71,7511|76,8373|7.066|19.215|
 
 exsort tốt hơn HOTA/IDF1/IDSW ở lượt này, nhưng FP nhiều hơn và MOTA thấp hơn TrackTrack. Hai pipeline có NMS/postprocessing khác nhau, nên không quy toàn bộ chênh lệch cho association hoặc ReID. Test đã từng được xem trong quá trình nghiên cứu trước đó; không mô tả đây là một test hoàn toàn chưa từng tiếp xúc. Lưu ý thêm sự chi phối của sequence morongmo trong pooled val và tương quan cùng cảnh; xem [TUNING.md](docs/TUNING.md).
 

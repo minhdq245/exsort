@@ -16,7 +16,7 @@ from exsort.api import create_tracker
 from exsort.cache import MASK, image_identity, ledger, saturation, write_block
 from exsort.dataset import current_gt, prepare
 from exsort.io import key, read, save, sha
-from exsort.runner import replay, track_one, worker_manifest
+from exsort.runner import replay, replay_fps, track_one, worker_manifest
 from exsort.scoring import evaluate_sequence, summary
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +28,10 @@ def make_fixture(root):
         folder = data/split/name
         (folder/"images").mkdir(parents=True)
         (folder/"mot/gt").mkdir(parents=True)
+        if split == "train":
+            save(folder/"meta/DONE.json", {"output_integer_fps": 22})
+        else:
+            (folder/"seqinfo.ini").write_text("[Sequence]\nframeRate=25\n")
         rows = []
         for k in range(n):
             image = np.full((80, 100, 3), 20, dtype=np.uint8)
@@ -142,17 +146,46 @@ class PipelineTests(unittest.TestCase):
         empty = np.zeros((512, 512), bool)
         config = copy.deepcopy(self.config)
         config["params"].update(BIRTH_POLICY="iom_active", INIT=0.)
-        model = create_tracker(config)
+        model = create_tracker(config, fps=22)
         for k in range(1, 7):
             box = np.array([.30 if k <= 3 else .45, .5, .1, .4], np.float32)
             out = model.step([dict(box=box, conf=.9)], 512, 512, k, empty)
         self.assertEqual((len(model.tracks), len(out), out[0].id), (1, 1, 1))
-        model = create_tracker(config)
+        model = create_tracker(config, fps=22)
         for k in range(1, 4):
             model.step([dict(box=np.array([x, .5, .1, .6], np.float32), conf=.9) for x in (.2, .6)], 512, 512, k, empty)
         for k in range(4, 7):
             out = model.step([dict(box=np.array([.4, .5, .1, .6], np.float32), conf=.9)], 512, 512, k, empty)
-        self.assertEqual((len(out), out[0].id, len(model.tracks)), (1, 3, 3))
+        self.assertEqual([(t.id, t.kf.time_since_update) for t in out], [(1, 3), (2, 3), (3, 0)])
+        self.assertEqual(len(model.tracks), 3)
+
+    def test_selected_output_budget_and_memory(self):
+        with self.assertRaisesRegex(ValueError, "positive sequence FPS"):
+            create_tracker(self.config)
+        self.assertEqual(self.val["sequences"]["train_scene"]["fps"], 22)
+        self.assertEqual(self.test["sequences"]["test_scene"]["fps"], 25)
+        old_manifest = copy.deepcopy(self.val)
+        del old_manifest["sequences"]["train_scene"]["fps"]
+        self.assertEqual(replay_fps(old_manifest, "train_scene"), 22)
+        self.assertEqual(image_identity(self.val), image_identity(old_manifest))
+
+        empty = np.zeros((512, 512), bool)
+        glare = empty.copy()
+        glare[160, 256] = True
+        rows = [dict(box=[.5, .5, .2, .4], conf=.9)]
+        for fps in (19, 22, 25):
+            with self.subTest(fps=fps):
+                model = create_tracker(self.config, fps=fps)
+                for frame in range(1, 4):
+                    model.step(rows, 512, 512, frame, empty)
+                for age in range(1, 2 * fps + 2):
+                    has_glare = age > fps + 1
+                    out = model.step([], 512, 512, age + 3, glare if has_glare else empty)
+                    expect_box = age <= fps or (has_glare and age <= 2 * fps)
+                    self.assertEqual([t.id for t in out], [1] if expect_box else [])
+                    self.assertEqual([t.id for t in model.tracks], [1])
+                out = model.step(rows, 512, 512, 2 * fps + 5, empty)
+                self.assertEqual([t.id for t in out], [1])
 
     def test_grouped_scoring_matches_native_trackeval(self):
         import trackeval
