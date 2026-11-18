@@ -20,6 +20,11 @@ INIT=0.0  # 0 reuses DET; .4 is TrackTrack's explicit birth threshold.
 LOW_OUTPUT='all';OUTPUT_FILTER='none'
 TT_MIN_AREA=100.;TT_MAX_ASPECT=1.6
 RECOVERY=False;LOST_BIRTH='veto'
+# CREDIBILITY: a detection is credible when its score reaches the birth threshold max(DET, INIT).
+#   A track is confirmed only after MIN_HITS credible detections, may coast only while the mean score of its
+#   matched detections is credible, and outputs no box once its last credible detection is older than MAX_AGE
+#   frames (the track stays in memory). False keeps the original behaviour.
+CREDIBILITY=False
 
 def assoc(a,b,scores=None,low=False):
     sim=iou_batch(np.asarray(a,np.float32).reshape(-1,4),np.asarray(b,np.float32).reshape(-1,4))
@@ -72,10 +77,13 @@ class Track(L.Track):
         super().__init__(tid,row,W,H);self.high_hits=1
         self.high_box=row[:4].copy();self.since_high=0
         self.prior_box=row[:4].copy()
+        self.score_sum=float(row[4]);self.score_n=1;self.since_cred=0
         if OPTS['noise']:self.kf.__class__=ConfidenceKalmanBoxTracker
     def observe(self,row):
         super().observe(row)
-        self.high_hits+=int(row[4]>=DET)
+        self.score_sum+=float(row[4]);self.score_n+=1
+        if row[4]>=max(DET,INIT):self.since_cred=0
+        self.high_hits+=int(row[4]>=(max(DET,INIT) if CREDIBILITY else DET))
         if row[4]>=DET:self.high_box=row[:4].copy();self.since_high=0
     def out_box(self):
         if self.kf.time_since_update or MEASURE=='raw':return super().out_box()
@@ -85,8 +93,10 @@ class Track(L.Track):
         return xyxy_to_norm_box(b,self.W,self.H)
 
 class EXSORT(L.EXSORT):
-    def __init__(self, fps=None):
+    def __init__(self, fps=None, *, blind_coast_seconds=1.0, glare_coast_seconds=2.0):
         self.fps = fps
+        self.blind_coast_seconds = blind_coast_seconds
+        self.glare_coast_seconds = glare_coast_seconds
         OPTS.update(admissible=ADMISSIBLE,lifecycle=LIFECYCLE,birth_policy=BIRTH_POLICY,noise=NOISE,coast=COAST_MODE)
         for k in ('DET','LOW','NMS','IOU','MIN_HITS','MAX_AGE','HEAD_FRACTION','EV'):setattr(L,k,globals()[k])
         L.OPTS.clear();L.OPTS.update(OPTS)
@@ -107,7 +117,8 @@ class EXSORT(L.EXSORT):
         return float(iou_batch(np.asarray(b,np.float32)[None],t.box[None])[0,0])>=IOU
     def emission(self,t):
         if OPTS["coast"] == "fps_budget":
-            seconds = 2 if t.now else 1
+            if CREDIBILITY and t.score_sum/t.score_n<max(DET,INIT):return False
+            seconds = self.glare_coast_seconds if t.now else self.blind_coast_seconds
             return OPTS["emit"] and self._localised(t) and t.kf.time_since_update <= seconds * self.fps
         if not OPTS['emit'] or not t.now or not self._localised(t):return False
         mode=OPTS['coast']
@@ -132,7 +143,7 @@ class EXSORT(L.EXSORT):
         D=np.asarray([list(norm_box_to_xyxy(d['box'],W,H))+[d['conf']] for d in dets if d['conf']>=DET],np.float32).reshape(-1,5)
         D=D[L._nms_keep(D)]
         low=np.asarray([list(norm_box_to_xyxy(d['box'],W,H))+[d['conf']] for d in dets if LOW<=d['conf']<DET],np.float32).reshape(-1,5)
-        for t in self.tracks:t.since_high+=1
+        for t in self.tracks:t.since_high+=1;t.since_cred+=1
         P=np.asarray([t.kf.predict()[0][:4] for t in self.tracks],np.float32).reshape(-1,4)
         for i,t in enumerate(self.tracks):t.prior_box=P[i].copy()
         ud=list(range(len(D)))
@@ -170,6 +181,7 @@ class EXSORT(L.EXSORT):
         self.tracks=[t for t in self.tracks if t.alive()]
         if RECOVERY:self._inherit()
         out=[t for t in self.tracks if (self.confirmed(t) or (not OPTS['lifecycle'] and self.frame<=MIN_HITS)) and (t.kf.time_since_update==0 or self.emission(t))]
+        if CREDIBILITY:out=[t for t in out if t.since_cred<=MAX_AGE]
         if LOW_OUTPUT!='all':
             accepted=[]
             for t in out:

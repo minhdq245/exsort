@@ -19,9 +19,11 @@ eligible:    100 - HOTA
 ineligible:  200 + MOTA_floor - MOTA
 ```
 
-Đây là scalar penalty cụ thể cho constrained selection, không phải chứng minh tối ưu Pareto hoặc constrained Bayesian optimization xác suất. Xếp hạng cuối dùng trực tiếp rule HOTA/MOTA; baseline luôn còn trong tập ứng viên. MOTA floor đo lại trên val hiện hành.
+Đây là scalar penalty cụ thể cho constrained selection, không phải chứng minh tối ưu Pareto hoặc constrained Bayesian optimization xác suất. Xếp hạng cuối dùng trực tiếp rule HOTA/MOTA; baseline luôn còn trong tập ứng viên. Mặc định lấy MOTA floor từ baseline được chấm lại trên val hiện hành. Có thể đặt `mota_floor` trong cấu hình tìm kiếm để tiếp tục dùng cùng ngưỡng của một lượt tìm kiếm trước trên cùng tập val.
 
 CLI cố định cấu trúc trong numeric tuning, đề xuất tuần tự để mỗi trial nhận feedback từ trial trước. `--workers` chỉ song song các sequence. Cách này dễ audit và tránh phải đọc lại ảnh/GPU. Không khẳng định mọi trial luôn cải thiện hoặc số trial nhỏ luôn tìm được optimum.
+
+Để tune hai mốc coasting bằng số thực, đặt `BLIND_COAST_SECONDS` và `GLARE_COAST_SECONDS` trong cấu hình khởi đầu và khai báo khoảng cho từng tham số trong `numeric_search`. Tracker quy đổi từng mốc sang số frame tối đa theo FPS của sequence. Hai giá trị gần nhau có thể cho cùng số frame ở một FPS.
 
 ## Lịch sử trước bản public
 

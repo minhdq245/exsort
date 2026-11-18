@@ -73,7 +73,19 @@ Vòng SMAC đầu tìm tám tham số trong miền dưới đây. Giá trị b�
 - **Mask bão hòa.** Resize ảnh về 512 × 512 rồi chuyển sang HSV. Một pixel vào mask nếu đồng thời có `V ≥ 235` và `S ≤ 89`. [Code mask](../exsort/cache.py)
 - **Detector và cache.** Dùng YOLOX-X checkpoint epoch 15, input 800 × 1.440 (cao × rộng), confidence floor 0,001, NMS 0,65 và tối đa 100 detection mỗi frame khi tạo cache. `NMS` trong bảng trên là ngưỡng riêng của tracker trên các detection đã có trong cache. [Protocol cache](../README.md#3-tạo-cache-detector-và-mask-một-lần)
 
-Mốc xuất box **1 giây ngoài mask và 2 giây chạm mask** được áp dụng trong `configs/selected.json` qua `COAST_MODE=fps_budget`. FPS lấy theo timeline của ảnh đưa vào tracker.
+## Cấu hình cuối: một lượt ghép và luật detection đáng tin
+
+[Cấu hình cuối](../configs/final.json) khác cấu hình ở trên như sau. Các giá trị chọn trên val.
+
+- **Một lượt ghép.** `DET=LOW=0,1`: mọi detection có score≥0,1 vào cùng một lượt ghép (NMS 0,6), không còn nhóm low riêng. Trên val, `DET=0,1001` cho kết quả giống hệt. Birth vẫn cần score≥`INIT=0,6`.
+- **Tham số làm tròn.** `IOU=0,3`, `NMS=0,6`, `HEAD_FRACTION=0,25`, `EV=0,9`, `MAX_AGE=120`, `MIN_HITS=3`.
+- **Không coast mù.** `BLIND_COAST_SECONDS=0`: khi vùng đầu nằm ngoài mask thì không xuất box dự đoán. `GLARE_COAST_SECONDS=1`: khi vùng đầu chạm mask thì xuất tối đa 1 giây.
+- **`CREDIBILITY=true`.** Một detection là đáng tin khi score≥max(DET, INIT). Bật cờ này thêm ba luật, không có tham số mới:
+  1. Track chỉ confirmed khi có `MIN_HITS` detection đáng tin.
+  2. Box dự đoán dưới glare chỉ được xuất khi trung bình score các detection đã ghép của track ≥ max(DET, INIT).
+  3. Track không xuất box khi detection đáng tin gần nhất đã cũ hơn `MAX_AGE` frame. Track vẫn ở trong bộ nhớ và xuất lại khi có detection đáng tin.
+
+Với `COAST_MODE=fps_budget`, đặt đồng thời `BLIND_COAST_SECONDS` và `GLARE_COAST_SECONDS` trong `params` để thử hai giới hạn xuất box riêng. Khi không đặt, code dùng mặc định 1 và 2 giây. Cả hai giới hạn dùng FPS của sequence và cùng tính từ lần ghép detection cuối. Mỗi frame chọn giới hạn theo giao giữa vùng đầu box dự đoán và mask ở frame đó. Việc chuyển nhánh giữ nguyên thời gian đã trôi qua và vẫn áp dụng điều kiện IoU. Bộ đếm giữ ID trong bộ nhớ tiếp tục dùng quy tắc ở bước 6.
 
 ## Các tình huống đã chạy qua pipeline
 

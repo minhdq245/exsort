@@ -1,10 +1,11 @@
 """Sequential SMAC3 RF Bayesian proposals, full-val feedback, no test reads."""
 import copy
+import math
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import time
-from .api import validate
+from .api import COAST_LIMITS, NUMERIC, validate
 from .cache import verify
 from .io import key, read, save, source_signature
 from .runner import freeze, replay
@@ -25,6 +26,9 @@ def tune(args):
         raise ValueError("Tuning reads validation manifests only")
     initial, baseline = validate(read(args.initial_config)), validate(read(args.baseline))
     space = read(args.search)
+    fixed_floor = space.get("mota_floor")
+    if fixed_floor is not None and (type(fixed_floor) not in (int, float) or not math.isfinite(fixed_floor)):
+        raise ValueError("The configured MOTA floor must be a finite number")
     meta = verify(args.cache, manifest)
     root = Path(args.output)
     protocol = dict(manifest_signature=manifest["signature"], cache_identity=meta["identity"],
@@ -40,8 +44,8 @@ def tune(args):
         return
     cs = ConfigurationSpace(seed=space["seed"])
     for name, limits in space["numeric_search"].items():
-        if name not in {"DET", "LOW", "NMS", "IOU", "MAX_AGE", "MIN_HITS", "HEAD_FRACTION", "EV", "INIT"}:
-            raise ValueError(f"Unsupported numeric hyperparameter {name}")
+        if name not in NUMERIC | COAST_LIMITS or name not in initial["params"]:
+            raise ValueError(f"Numeric hyperparameter {name} must be supported and present in the initial configuration")
         cls = Integer if name in ("MAX_AGE", "MIN_HITS") else Float
         cs.add(cls(name, tuple(limits), default=initial["params"][name]))
     scenario = Scenario(cs, name="exsort_rf", output_directory=root/"smac", deterministic=True,
@@ -62,7 +66,7 @@ def tune(args):
             return result
 
         base_result = evaluate(baseline)
-        floor = base_result["summary"]["MOTA"]
+        floor = base_result["summary"]["MOTA"] if fixed_floor is None else fixed_floor
         save(root/"baseline.json", dict(summary=base_result["summary"], MOTA_floor=floor, config=baseline))
         evaluate(initial)
         pending = root/"pending.json"

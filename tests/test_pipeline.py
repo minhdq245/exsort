@@ -187,6 +187,64 @@ class PipelineTests(unittest.TestCase):
                 out = model.step(rows, 512, 512, 2 * fps + 5, empty)
                 self.assertEqual([t.id for t in out], [1])
 
+    def test_coast_limits_use_current_mask_and_share_one_clock(self):
+        config = copy.deepcopy(self.config)
+        config["params"].update(BLIND_COAST_SECONDS=.75, GLARE_COAST_SECONDS=2.5)
+        empty = np.zeros((512, 512), bool)
+        glare = empty.copy()
+        glare[160, 256] = True
+        rows = [dict(box=[.5, .5, .2, .4], conf=.9)]
+        for fps in (19, 22, 25):
+            with self.subTest(fps=fps):
+                model = create_tracker(config, fps=fps)
+                for frame in range(1, 4):
+                    model.step(rows, 512, 512, frame, empty)
+                for age in range(1, int(2.5 * fps) + 2):
+                    has_glare = age > .75 * fps and age % 2 == 1
+                    limit = 2.5 if has_glare else .75
+                    out = model.step([], 512, 512, age + 3, glare if has_glare else empty)
+                    self.assertEqual([t.id for t in out], [1] if age <= limit * fps else [])
+                    self.assertEqual([t.id for t in model.tracks], [1])
+
+    def test_final_credibility_rules(self):
+        config = read(ROOT/"configs/final.json")
+        self.assertTrue(config["params"]["CREDIBILITY"])
+        empty = np.zeros((512, 512), bool)
+        glare = empty.copy()
+        glare[160, 256] = True
+        box = [.5, .5, .2, .4]
+        det = lambda conf: [dict(box=box, conf=conf)]
+        fps = 20
+        # Confirmation counts only credible detections (score >= INIT): 0.9, 0.4, 0.4 is not enough.
+        model = create_tracker(config, fps=fps)
+        outs = [model.step(det(c), 512, 512, k, empty) for k, c in enumerate((.9, .4, .4, .9, .9), 1)]
+        self.assertEqual([len(o) for o in outs], [0, 0, 0, 0, 1])
+        off = copy.deepcopy(config)
+        off["params"]["CREDIBILITY"] = False
+        model = create_tracker(off, fps=fps)
+        outs = [model.step(det(c), 512, 512, k, empty) for k, c in enumerate((.9, .4, .4), 1)]
+        self.assertEqual(len(outs[-1]), 1)
+        # A glare coast box needs a credible mean score of the matched detections.
+        for scores, coasts in [((.9, .9, .9), True), ((.9, .7, .7) + (.3,) * 6, False)]:
+            with self.subTest(scores=scores):
+                model = create_tracker(config, fps=fps)
+                for k, c in enumerate(scores, 1):
+                    model.step(det(c), 512, 512, k, empty)
+                out = model.step([], 512, 512, len(scores) + 1, glare)
+                self.assertEqual([t.id for t in out], [1] if coasts else [])
+                self.assertEqual(model.step([], 512, 512, len(scores) + 2, empty), [])  # no blind coast
+        # Low-score matches keep the track alive but its box stops after MAX_AGE frames without a credible one.
+        model = create_tracker(config, fps=fps)
+        for k in range(1, 4):
+            model.step(det(.9), 512, 512, k, empty)
+        max_age = config["params"]["MAX_AGE"]
+        for k in range(4, 4 + max_age + 1):
+            out = model.step(det(.3), 512, 512, k, empty)
+            self.assertEqual([t.id for t in out], [1] if k - 3 <= max_age else [])
+        self.assertEqual([t.id for t in model.tracks], [1])
+        out = model.step(det(.9), 512, 512, 5 + max_age, empty)
+        self.assertEqual([t.id for t in out], [1])
+
     def test_grouped_scoring_matches_native_trackeval(self):
         import trackeval
         gt = np.array([[1, 1, 10, 10, 20, 40, 1, 1, 1], [2, 1, 11, 10, 20, 40, 1, 1, 1],
