@@ -1,44 +1,42 @@
-# exsort
+# Ex-Sort
 
-**exsort** là bộ theo dõi người dùng chuyển động, detection confidence thấp và bằng chứng chói sáng để xử lý mất detection. Bản được chọn **không dùng ReID**, không cập nhật tâm người theo tâm đèn. Repo chứa thuật toán mới nhất, cấu hình đã chọn, cache detector/mask, Bayesian tuning trên val và đánh giá bằng TrackEval trên test.
+**Ex-Sort** là bộ theo dõi nhiều người cho video có glare (vùng sáng bão hòa do đèn). Ex-Sort dùng Kalman của OC-SORT và ghép IoU, không dùng ReID. Khi một người mất detection, Ex-Sort kiểm tra mask glare ở vùng đầu của box dự đoán: nếu có glare thì lần mất được coi là do glare, track không bị tính tuổi và có thể xuất box dự đoán trong tối đa 1 giây. Detection có score thấp vẫn giữ track, nhưng chỉ detection đáng tin (score ≥ 0,6) mới tạo và xác nhận track.
 
-## Pipeline inference của cấu hình chính thức
+Repo gồm tracker, cấu hình cuối, tạo cache detection/mask, replay trên val, tìm tham số bằng SMAC3 trên val, đánh giá test bằng TrackEval.
 
-`configs/selected.json` dùng **1 giây khi vùng đầu box dự đoán nằm ngoài mask bão hòa** và **2 giây khi vùng đầu chạm mask**. Thời gian tính từ lần ghép detection cuối, theo FPS của từng sequence.
+## Kết quả trên GlareMOT
 
-1. **Đọc đủ frame theo thứ tự.** Chuẩn bị detection người từ YOLOX-X và tính mask bão hòa HSV ở kích thước 512 × 512. Có thể lấy cả hai từ cache. Mask đánh dấu pixel thỏa `V ≥ 235` và `S ≤ 89`.
-2. **Dự đoán và ghép.** Score từ 0,25214 trở lên thuộc nhóm high, score từ 0,10128 đến dưới 0,25214 thuộc nhóm low. NMS tại ngưỡng 0,60224 áp dụng cho nhóm high. Mỗi track tiến Kalman một frame. Ghép high detection với track đã xác nhận bằng IoU, thử box dự đoán rồi box quan sát cuối. Ghép low detection với các track đã xác nhận còn thiếu quan sát. Sau đó ghép high detection còn dư với track mới đang chờ xác nhận.
-3. **Cập nhật, tạo và giữ track.** Detection ghép được cập nhật Kalman và reset bộ đếm mất dấu. High detection còn dư cần score ít nhất 0,4 và qua kiểm tra trùng để tạo track. Sau ba high hit liên tiếp, track được xác nhận. Khi confirmed track mất detection, kiểm tra mask trong khoảng 18,4% phía trên box dự đoán. Track hết hạn khi số frame miss chưa được glare giải thích vượt 160. Một track mới vừa xác nhận có thể lấy lại ID nếu đúng một track cũ đang mất dấu phù hợp.
-4. **Xuất box và ID.** Track confirmed có detection ghép xuất box sau cập nhật Kalman. Track confirmed đang mất detection chỉ xuất box dự đoán nếu còn trong mốc 1/2 giây và IoU với detection đã ghép gần nhất đạt `EV ≈ 0,72337`. Sau khi hết thời hạn xuất, track còn sống vẫn có thể ghép lại detection bằng ID cũ.
+Detector YOLOX-X (epoch 15), [cấu hình cuối](configs/final.json), TrackEval. Chỉ số chất lượng tính theo %.
 
-CLI đọc FPS từ manifest. Khi chuẩn bị manifest, FPS của ảnh trích lấy từ `meta/DONE.json` (trường `output_integer_fps`) hoặc `seqinfo.ini` (trường `frameRate` trong mục `[Sequence]`). Manifest cũ có thể lấy FPS từ các file metadata này khi replay. API Python nhận FPS tại `create_tracker(config, fps=fps)`. Dùng một tracker mới cho mỗi sequence và gọi `step()` cả ở frame trống. [Sơ đồ, tham số và ví dụ Python](docs/METHOD.md)
+| Tập | HOTA | DetA | AssA | IDF1 | MOTA | IDSW | FP | FN |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Val (71 sequence, 69.612 frame) | 57,98 | 60,99 | 55,84 | 77,13 | 80,29 | 58 | 9.888 | 27.072 |
+| Test (48 sequence, 118.632 frame, 114.097 box GT) | 63,07 | 62,76 | 64,08 | 81,79 | 80,09 | 33 | 4.304 | 18.382 |
 
-Nếu chạy bằng CLI, tạo manifest bằng `prepare`, tạo đầu vào bằng `cache` hoặc `import-cache`, rồi replay bằng `validate` trên val hoặc `evaluate` trên test với cấu hình đã khóa. Kết quả MOT nằm trong `trackers/exsort/data/` của thư mục run.
+Cấu hình được chọn trên val rồi đánh giá một lần trên test. [Cách chọn tham số](docs/TUNING.md)
 
-## Quy trình đánh giá
+## Phương pháp
 
-```text
-GlareMOT/images + person detector
-              |
-              v
-  cache detection + saturation mask  (GPU một lần)
-              |
-              v
-  replay nhiều cấu hình trên val     (CPU, không inference lại)
-              |
-              v
-  chọn theo HOTA với ràng buộc MOTA
-              |
-              v
-  selection.json được đóng băng
-              |
-              v
-  một cấu hình trên test + TrackEval + MOT predictions
+1. Giữ detection có score ≥ 0,1, NMS 0,6.
+2. Kalman dự đoán mọi track. Ghép track confirmed bằng Hungarian trên IoU (ngưỡng 0,3): trước với box dự đoán, sau với box ghép cuối. Rồi ghép track tentative với detection còn dư.
+3. Track tentative mất detection bị xóa. Track confirmed mất detection: nếu mask glare chạm 25% phía trên box dự đoán thì lần mất được glare giải thích. Track bị xóa sau hơn 120 lần mất không có glare.
+4. Detection còn dư tạo track khi score ≥ 0,6 và không bị track nào chiếm. Track được xác nhận sau 3 detection đáng tin.
+5. Track mới vừa xác nhận nhận lại ID của track cũ nếu có đúng một track đang mất ở gần.
+6. Xuất box Kalman cho track confirmed có detection ghép. Track đang mất chỉ xuất box dự đoán khi frame hiện tại có glare ở vùng đầu, chưa quá 1 giây từ lần ghép cuối, box dự đoán còn khớp box ghép cuối (IoU ≥ 0,9) và trung bình score các detection đã ghép ≥ 0,6. Track không có detection đáng tin trong hơn 120 frame thì không xuất box nhưng vẫn giữ ID.
+
+Chi tiết từng bước, tham số và API Python: [docs/METHOD.md](docs/METHOD.md).
+
+```python
+from exsort.api import create_tracker
+from exsort.io import read
+
+tracker = create_tracker(read("configs/final.json"), fps=25)   # một tracker cho mỗi sequence
+tracks = tracker.step(dets, W, H, sat=mask)                     # gọi mỗi frame, kể cả frame trống
 ```
 
-Hướng dẫn dưới đây dùng PowerShell và Python 3.10. Các lệnh `python -m exsort ...` cũng chạy trên Linux; thay đường dẫn và cách kích hoạt môi trường.
+## 1. Cài đặt
 
-## 1. Clone và cài môi trường
+Hướng dẫn dùng PowerShell và Python 3.10. Các lệnh `python -m exsort ...` cũng chạy trên Linux.
 
 ```powershell
 git clone https://github.com/minhdq245/exsort.git
@@ -48,258 +46,132 @@ py -3.10 -m venv .venv
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -c requirements-tested.txt -e ".[tune]"
 python -m pip install -r requirements-eval.txt
-python -m exsort --help
 python -m unittest discover -s tests -v
 ```
 
-Nếu PowerShell chặn activate, có thể gọi trực tiếp `.\.venv\Scripts\python.exe` thay cho `python`. Không cần đổi policy toàn máy.
+TrackEval được ghim ở commit `12c8791b303e0a0b50f753af204249e622d0281a`, SMAC3 ở `2.4.1`. Replay, tune và đánh giá chỉ cần CPU. Tạo cache detection cần thêm PyTorch, torchvision và YOLOX.
 
-TrackEval được ghim ở commit `12c8791b303e0a0b50f753af204249e622d0281a`; SMAC3 ở `2.4.1`. Các constraint đã kiểm tra nằm trong `requirements-tested.txt`. Bộ test nhỏ kiểm tra resume, đóng băng cấu hình, từ chối GT/config bị thay, hồi phục ID và parity với TrackEval file-based. Đây là kiểm tra phần mềm; không thay thế benchmark trên dữ liệu thật.
-
-Chỉ cần CPU để dùng cache có sẵn, tune và đánh giá tracking. Bước tạo detection cache mới cần thêm PyTorch/torchvision và detector.
-
-## 2. Chuẩn bị dữ liệu và split
+## 2. Dữ liệu và split
 
 ```text
-GlareMOT2 full/
-  split.json
-  train/
-    <sequence>/
-      images/frame_000000.jpg ...
-      mot/gt/gt.txt
-  test/
-    <sequence>/
-      images/frame_000000.jpg ...
-      mot/gt/gt.txt
+GlareMOT/
+  train/<sequence>/images/frame_000000.jpg ...
+  train/<sequence>/mot/gt/gt.txt
+  test/<sequence>/images/frame_000000.jpg ...
+  test/<sequence>/mot/gt/gt.txt
 ```
 
-`gt.txt` có 9 cột MOT: `frame,id,x,y,w,h,mark,class,visibility`. Frame GT bắt đầu từ **1**, dù tên ảnh có thể bắt đầu từ 0. Box dùng pixel gốc, `class=1` là person. `mark=0` bị loại khi scoring. File `labels`/`labels_all` dùng cho annotation/detector không phải input trực tiếp của tracker.
+`gt.txt` theo định dạng MOT 9 cột `frame,id,x,y,w,h,mark,class,visibility`, frame bắt đầu từ 1, box theo pixel gốc, `class=1` là người, `mark=0` bị bỏ khi chấm.
 
-Checkpoint detector phải được train chỉ bằng dữ liệu cho phép ở train (trong protocol temporal này: nửa đầu các sequence train, cộng external training data đã khai báo); không dùng ảnh/nhãn tracker val hoặc test để fine-tune detector. Repo này chỉ cung cấp cache/tuning/eval tracker, không chạy lại quá trình train detector.
-
-Split tham chiếu nằm trong `configs/split_seed20261024.json`: **71 train /48 test**, seed `20261024`; `400_sequence_morongmo` chỉ ở train, `401_sequence_nga3` chỉ ở test. Có thể dùng `split.json` gốc của dataset; CLI bỏ qua các đường dẫn ổ đĩa cũ trong đó và lấy sequence theo tên. Không tự random split lại.
-
-**Tracker val** lấy toàn bộ nửa sau của từng sequence train: với N ảnh, bỏ N//2 ảnh đầu, giữ N−N//2 ảnh sau, đánh lại frame từ 1 và khởi tạo tracker mới. Bản dữ liệu tham chiếu có **69.612 frame val**. Test dùng toàn bộ **118.632 frame/48 sequence**. Nếu ảnh hoặc timeline của bản dataset bạn dùng khác, số lượng sẽ khác và cần báo đúng số thực tế.
-
-Tracker val/test phải giữ **đầy đủ frame**, kể cả frame trống, frame chói và frame không có người. Quy tắc lấy 2,5 FPS/lọc box chói dùng khi train detector là một quy trình khác, không áp dụng vào benchmark tracking.
+Split nằm trong [configs/split_seed20261024.json](configs/split_seed20261024.json): 71 sequence train, 48 sequence test. **Val** là nửa sau của từng sequence train: với N ảnh, bỏ N//2 ảnh đầu, đánh lại frame từ 1 và dùng tracker mới. Detector chỉ được train trên nửa đầu các sequence train. Val và test giữ **mọi frame**, kể cả frame trống hoặc toàn glare.
 
 ```powershell
-$Data = "D:\datasets\GlareMOT2 full"
+$Data = "D:\datasets\GlareMOT"
 python -m exsort prepare --data "$Data" --split configs/split_seed20261024.json --role val --output runs/manifests/val.json
+python -m exsort prepare --data "$Data" --split configs/split_seed20261024.json --role test --output runs/manifests/test.json
 ```
 
-Manifest ghi tên ảnh, thứ tự, kích thước, mtime, hash ảnh đầu/cuối, SHA256 GT và FPS khi có metadata. Thêm `--hash-images` để tính SHA256 của **mọi ảnh**.
+Manifest ghi tên và thứ tự ảnh, kích thước, SHA256 của GT và FPS (từ `meta/DONE.json`, trường `output_integer_fps`, hoặc `seqinfo.ini`, trường `frameRate`). Thêm `--hash-images` để băm mọi ảnh.
 
-Nên chuẩn bị manifest test sau khi đã chốt val ở bước 7.
+## 3. Tạo cache detection và mask
 
-## 3. Tạo cache detector và mask một lần
-
-### 3a. Cài detector đúng fork
-
-Checkpoint nghiên cứu dùng YOLOX-X của fork **TrackTrack/ByteTrack**, person-only. Đây không phải model Ultralytics YOLO. Đặt checkpoint tin cậy của bạn trong `weights/`; repo không chứa weight hoặc dataset.
+Detector là YOLOX-X person-only của fork TrackTrack/ByteTrack (không phải Ultralytics). Repo không chứa weight hay dataset; đặt checkpoint vào `weights/`.
 
 ```powershell
 git clone https://github.com/kamkyu94/TrackTrack.git third_party/TrackTrack
 git -C third_party/TrackTrack checkout ee7f1c5fcbdcac48ed8bfab38d52c0006bf304da
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements-yolox.txt
-python -c "import torch,torchvision; print(torch.__version__,torchvision.__version__,torch.cuda.is_available())"
-```
-
-Lệnh CUDA 12.8 trên là ví dụ. Chọn cặp torch/torchvision và CUDA phù hợp driver/GPU qua [hướng dẫn PyTorch](https://pytorch.org/get-started/locally/). Môi trường kiểm tra adapter dùng torch `2.11.0+cu128` và torchvision `0.26.0+cu128`; các bản khác có thể cho khác biệt số học/NMS. Không dùng `--fuse` hay TensorRT khi cần đối chiếu cache cũ.
-
-`examples/yolox_x_person.py` khai báo đúng architecture: depth=1,33, width=1,25, một class. Nếu checkpoint dùng architecture khác, cung cấp `--exp` tương ứng. Load weight dùng strict state dict và không tự bỏ key bị sai.
-
-### 3b. Cache val
-
-```powershell
-python -m exsort cache --manifest runs/manifests/val.json --yolox-root "third_party/TrackTrack/1. YOLOX" --exp examples/yolox_x_person.py --weights weights/yolox_x_glaremot2_half_epoch15_fp16.pth --output cache/val --batch-size 4 --workers 4
+python -m exsort cache --manifest runs/manifests/val.json --yolox-root "third_party/TrackTrack/1. YOLOX" --exp examples/yolox_x_person.py --weights weights/yolox_x_glaremot_epoch15.pth --output cache/val --batch-size 4 --workers 4
 python -m exsort verify-cache --manifest runs/manifests/val.json --cache cache/val
 ```
 
-Thiết lập cố định:
+Làm tương tự cho test (`--manifest runs/manifests/test.json --output cache/test`). Chọn bản torch/CUDA hợp với máy theo [hướng dẫn PyTorch](https://pytorch.org/get-started/locally/).
 
 | Thành phần | Giá trị |
 |---|---|
-| Input detector | **H×W =800×1440**, một lần resize giữ tỉ lệ |
-| Padding | Màu 114, ảnh ở góc trên trái |
+| Input detector | 800 × 1440 (cao × rộng), resize giữ tỉ lệ, pad màu 114 |
 | Chuẩn hóa | BGR→RGB; mean `.485,.456,.406`; std `.229,.224,.225` |
-| Precision | FP16 mặc định; không fuse Conv/BN |
-| Score | objectness × person confidence |
-| Confidence floor | 0,001 |
-| NMS của cache | 0,65 |
-| Giới hạn | 100 detection/frame sau NMS |
-| Tọa độ lưu | `x1,y1,x2,y2,score`, pixel ảnh gốc |
-| Saturation mask | Resize ảnh gốc về 512×512 bằng INTER_AREA, rồi HSV: **V≥235 và S≤89** |
-| Mask lưu | `packbits`, 32.768 byte/frame; đo từ ảnh thật |
+| Precision | FP16, không fuse Conv/BN |
+| Score | objectness × xác suất lớp person |
+| Score floor / NMS / tối đa | 0,001 / 0,65 / 100 detection mỗi frame |
+| Lưu box | `x1,y1,x2,y2,score`, pixel gốc |
+| Mask glare | Resize về 512 × 512 (INTER_AREA), HSV, `V ≥ 235` và `S ≤ 89`, lưu `packbits` |
 
-Mask dùng ngưỡng `S≤89` để khớp thí nghiệm cũ, không tự đổi thành 90. Không dùng mask giả toàn 0. Detection cache và mask nằm cùng block `.npz`, có offsets cho từng frame và SHA256 từng block. Frame không có detection vẫn có offsets/mask.
+Cache lưu theo block 512 frame, mỗi block có SHA256. Vì cache đã áp NMS 0,65 và score floor 0,001, tracker cần `NMS ≤ 0,65` và `DET ≥ 0,001`.
 
-**Cache đã NMS 0,65/cap100 không thể khôi phục box bị bỏ.** Vì vậy tune phải có NMS≤0,65 và LOW≥0,001. Muốn mở rộng miền này phải tạo loại cache mới và công bố lại protocol.
-
-### 3c. Chạy nhanh mà vẫn giữ protocol
-
-- Một model GPU chạy batch; nhiều CPU worker đọc/resize ảnh. Bắt đầu batch=4, workers=4. Có thể đo throughput rồi thử batch=8 nếu VRAM cho phép. Không chạy 2–3 model song song trên cùng GPU một cách mặc định.
-- Batch/frame loading chỉ tăng throughput; association vẫn theo đúng thứ tự frame từng sequence.
-- Có lỗi CUDA OOM khi forward, adapter giảm đôi batch và chạy lại từ block đã lưu gần nhất. OOM ngay lúc nạp model cần giảm input/model hoặc giải phóng VRAM; thay input size là thay protocol.
-- Block mặc định 512 frame. Cache lưu bằng NPZ không nén để giảm CPU; mask đã đóng gói bit. Nên đặt cache trên SSD và tránh đọc ảnh, ghi cache và nén dataset đồng thời trên một HDD.
-- Batch/worker tối ưu phụ thuộc GPU, CPU và đĩa. Không có ETA chung cho mọi máy; đo từ `progress.json` và tốc độ thực tế.
-
-### 3d. Nếu đã có cache từ thí nghiệm cũ
-
-Không cần chạy lại GPU. Xem [hướng dẫn import cache cũ](docs/LEGACY_CACHE.md). Cần xác nhận ảnh/timeline còn đúng; cache cũ không có hash nội dung đầy đủ của mọi ảnh. GT đã sửa vẫn dùng lại detection nếu ảnh và timeline không đổi.
-
-## 4. Kiểm tra một cấu hình trên val
+## 4. Replay trên val
 
 ```powershell
-python -m exsort validate --manifest runs/manifests/val.json --cache cache/val --config configs/selected.json --output runs/val_selected --workers 8
+python -m exsort validate --manifest runs/manifests/val.json --cache cache/val --config configs/final.json --output runs/val_final --workers 8
 ```
 
-Lệnh replay liên tục từng sequence, ghi MOT predictions, chạy HOTA/CLEAR/Identity/Count, rồi đóng băng `runs/val_selected/selection.json`. Đây là cách chạy cấu hình đã công bố nếu không cần tìm tham số mới. Không dùng số liệu cũ để mặc định rằng GT mới sẽ cho cùng điểm.
-
-Output chính:
+Lệnh replay từng sequence, ghi dự đoán MOT, chấm HOTA/CLEAR/Identity/Count rồi khóa cấu hình vào `runs/val_final/selection.json`.
 
 ```text
-runs/val_selected/
+runs/val_final/
   protocol.json
-  metrics.json                      # summary và từng sequence
-  all_trackeval_metrics.json         # toàn bộ field/array của các metric
-  selection.json                    # config + source/split/model signatures
-  trackers/exsort/data/<seq>.txt     # MOT predictions
-  work/<seq>/checkpoint.pkl.gz       # trạng thái resume sau mỗi cache block
+  metrics.json                     # tổng và từng sequence
+  all_trackeval_metrics.json       # toàn bộ trường của TrackEval
+  selection.json                   # cấu hình + chữ ký split/source/detector
+  trackers/exsort/data/<seq>.txt   # dự đoán MOT
+  work/<seq>/checkpoint.pkl.gz     # trạng thái để chạy tiếp
   complete.json
 ```
 
-## 5. Bayesian tuning chỉ trên val
+## 5. Tìm tham số trên val (tùy chọn)
 
 ```powershell
-python -m exsort tune --manifest runs/manifests/val.json --cache cache/val --initial-config configs/selected.json --baseline configs/baseline.json --search configs/search_local.json --output runs/tune_local --workers 8
+python -m exsort tune --manifest runs/manifests/val.json --cache cache/val --output runs/tune --workers 8
 ```
 
-Lệnh thực hiện:
+SMAC3 đề xuất tuần tự, mỗi trial replay toàn bộ val, chọn cấu hình có MOTA val cao nhất. Lệnh không đọc test. [Chi tiết](docs/TUNING.md)
 
-1. Kiểm tra cache, ảnh và GT; baseline được đo lại trên **val hiện tại**.
-2. Lấy MOTA baseline làm ngưỡng tối thiểu. Không tái sử dụng giá trị floor từ GT cũ.
-3. SMAC3 dùng random-forest surrogate và Log Expected Improvement để đề xuất trial. Các điểm Sobol/điểm khởi đầu tạo thông tin ban đầu; sau đó mỗi trial nhận feedback trước đề xuất tiếp theo.
-4. Mỗi trial replay **toàn bộ val**, không đánh giá vài sequence rồi suy thành full score. Các sequence chạy CPU song song, một cấu hình tại một thời điểm để feedback rõ ràng.
-5. Chọn HOTA pooled cao nhất trong các cấu hình đạt MOTA floor. Hòa điểm: IDF1, rồi MOTA, rồi ít IDSW hơn. Baseline luôn có trong tập ứng viên.
-6. Lưu runhistory, từng trial, từng sequence và `selection.json` cuối cùng. **Không đọc manifest test trong tuning.**
-
-Miền local đã dùng ở vòng nghiên cứu gần nhất:
-
-| Tham số | Min | Max |
-|---|---:|---:|
-| DET |0,2181218260059|0,2781218260059|
-| LOW |0,075|0,13|
-| NMS |0,55|0,65|
-| IOU |0,27|0,32|
-| EV |0,55|0,78|
-| MAX_AGE |60|200|
-
-Mặc định local: **24 trial**, seed `20261030`; HEAD_FRACTION/MIN_HITS và cấu trúc lấy từ initial config. `configs/search_broad.json` có miền rộng 8 biến, 64 trial, seed `20261028`, phù hợp khảo sát lại. Đổi search file hoặc số trial phải dùng output mới. Đây là tối ưu ngân sách hữu hạn, không bảo đảm tối ưu toàn cục.
-
-**Phân biệt với lịch sử:** CLI mới tune số trên một cấu trúc cố định. Lượt nghiên cứu cũ còn chọn cấu trúc bằng ablation, dùng batch 2–3 proposal và local checks. Vì vậy chạy CLI mới không bảo đảm sinh lại đúng thứ tự 84 ứng viên cũ. Danh sách ứng viên/điểm cũ nằm ở `history/validation_candidates_20261029.json`; quy trình lịch sử được mô tả trong [TUNING.md](docs/TUNING.md).
-
-## 6. Ablation cơ chế, rồi chốt trước test
-
-Nếu cần xác định cơ chế nào giúp, dùng các biến thể khai báo sẵn:
+## 6. Đánh giá test
 
 ```powershell
-python -m exsort ablate --manifest runs/manifests/val.json --cache cache/val --config configs/selected.json --variants configs/ablations.json --output runs/ablations --workers 8
+python -m exsort evaluate --manifest runs/manifests/test.json --cache cache/test --selection runs/val_final/selection.json --output runs/test_final --workers 8
 ```
 
-Lệnh so sánh bỏ recovery, bật lost-birth veto, box raw, bỏ xuất dự đoán khi mất dấu, dùng chung DET cho birth và association low nghiêm ngặt. Các ứng viên được đánh giá trên đầy đủ val. Chọn theo cùng HOTA/MOTA-floor rule; ghi `best_config.json` và `selection.json`.
+Lệnh kiểm tra selection chưa bị sửa, cùng split, cùng source code và cùng checkpoint detector với val. Đổi code hoặc cấu hình sau khi khóa thì phải chạy lại val vào thư mục mới.
 
-Có thể lấy `best_config.json` làm `--initial-config` cho một lượt tune mới; cần định trước ngân sách và ghi đầy đủ các lượt đã thử. Nếu cấu hình nằm ngoài miền search hiện tại, sửa miền search tương ứng trước khi chạy. Sau khi đã xem test, không dùng test để chọn vòng tune/biến thể tiếp theo rồi vẫn gọi đó là hold-out hoàn toàn mới.
+- `metrics.json`: HOTA, DetA, AssA, IDF1, MOTA, IDSW, FP, FN tổng và từng sequence. HOTA tổng dùng `combine_sequences` của TrackEval; CLEAR và Identity dùng IoU 0,5.
+- `trackers/exsort/data/*.txt`: `frame,id,x,y,w,h,1,-1,-1,-1`, frame từ 1, pixel gốc. Val ghi 2 chữ số thập phân, test 4.
 
-## 7. Đóng băng cấu hình và eval test
-
-Chọn đúng **một** `selection.json` từ val (ví dụ `runs/tune_local/selection.json`), rồi:
+## 7. Tạm dừng và chạy tiếp
 
 ```powershell
-python -m exsort prepare --data "$Data" --split configs/split_seed20261024.json --role test --output runs/manifests/test.json
-python -m exsort cache --manifest runs/manifests/test.json --yolox-root "third_party/TrackTrack/1. YOLOX" --exp examples/yolox_x_person.py --weights weights/yolox_x_glaremot2_half_epoch15_fp16.pth --output cache/test --batch-size 4 --workers 4
-python -m exsort verify-cache --manifest runs/manifests/test.json --cache cache/test
-python -m exsort evaluate --manifest runs/manifests/test.json --cache cache/test --selection runs/tune_local/selection.json --output runs/test_frozen --workers 8
+New-Item runs/val_final/STOP -ItemType File   # dừng sau block đang chạy
+Remove-Item runs/val_final/STOP               # rồi chạy lại đúng lệnh cũ
 ```
 
-Nếu đã import cache test ở bước 3d, bỏ lệnh tạo cache GPU và dùng thư mục cache đã import.
+STOP cũng dùng cho thư mục `cache` và `tune`. Ctrl+C cũng chạy tiếp được từ block hoặc trial đã lưu. Không mở hai tiến trình ghi cùng một thư mục output.
 
-Eval kiểm tra seal cấu hình, source signature, split, checkpoint detector giống val/test và SHA các đầu vào. Nếu thay code hoặc sửa cấu hình sau freeze, phải chạy lại val/freeze trong run mới. Seal là kiểm tra nhất quán, không phải chữ ký số chống giả mạo.
-
-Kết quả:
-
-- `metrics.json`: HOTA, DetA, AssA, IDF1, MOTA, IDSW, FP, FN tổng và từng sequence.
-- `all_trackeval_metrics.json`: đầy đủ HOTA/CLEAR/Identity/Count, gồm các field phụ và các giá trị theo ngưỡng HOTA. HOTA dùng bộ ngưỡng mặc định TrackEval; CLEAR/Identity dùng IoU 0,5.
-- `trackers/exsort/data/*.txt`: format `frame,id,x,y,w,h,score,-1,-1,-1`. Frame 1-based, pixel ảnh gốc. Score output=1 theo runner nghiên cứu; score detector thật vẫn giữ trong cache, không coi score=1 là confidence đã hiệu chuẩn.
-- `frozen_selection.json`, `protocol.json`, `complete.json`: provenance để đối chiếu.
-
-Metric quality hiển thị theo **%**; IDSW/FP/FN là số đếm. HOTA tổng dùng `combine_sequences` của TrackEval, không phải trung bình đơn giản HOTA từng sequence. Val dùng box GT/prediction 2 chữ số thập phân để khớp protocol cũ; test prediction 4 chữ số. `DO_PREPROC=False` tương ứng dataset person-only đã kiểm tra; không dùng nguyên protocol này cho MOT17 có distractor/ignore class mà chưa bổ sung preprocessing chính thức.
-
-## 8. Tạm dừng và chạy tiếp
-
-```powershell
-# Dừng cache sau block đang chạy:
-New-Item cache/val/STOP -ItemType File
-# Khi tiếp tục:
-Remove-Item cache/val/STOP
-# Chạy lại nguyên lệnh cache, giữ nguyên output.
-
-# Dừng tune sau trial đang chạy:
-New-Item runs/tune_local/STOP -ItemType File
-# Gỡ STOP và chạy lại nguyên lệnh tune để tiếp tục.
-```
-
-Trong replay `validate/evaluate`, đặt STOP ở gốc run tương ứng; mỗi worker lưu trạng thái sau block rồi dừng. Ctrl+C/đóng tiến trình cũng chạy tiếp được từ block/trial đã commit; phần chưa commit có thể cần làm lại. Không cần xóa output hoặc chạy lại từ đầu. Đừng mở hai writer cho cùng output; CLI có kiểm tra PID/create time.
-
-Không thay model, split, ảnh, code, search hoặc GT giữa một run. Thay GT phải tạo manifest/run mới. Không đọc file pickle/checkpoint cache không tin cậy.
-
-## 9. Khi GT được sửa nhưng ảnh vẫn giữ nguyên
-
-Detection cache độc lập GT, nên có thể dùng lại cache và tạo manifest mới. Nếu đã có MOT predictions cho chính timeline đó, **chỉ chấm lại**, không inference/tracking lại:
+## 8. GT thay đổi nhưng ảnh giữ nguyên
 
 ```powershell
 python -m exsort prepare --data "$Data" --split configs/split_seed20261024.json --role test --output runs/manifests/test_gt_v2.json
-python -m exsort rescore --manifest runs/manifests/test_gt_v2.json --original-manifest runs/manifests/test.json --predictions runs/test_frozen/trackers/exsort/data --output runs/rescore_gt_v2 --workers 8
+python -m exsort rescore --manifest runs/manifests/test_gt_v2.json --original-manifest runs/manifests/test.json --predictions runs/test_final/trackers/exsort/data --output runs/rescore_gt_v2 --workers 8
 ```
 
-Hai manifest phải có image/timeline signature giống nhau. Nếu ảnh/frame đã bị thêm, xóa hoặc thay, không coi predictions cũ là còn hợp lệ.
+Chỉ chấm lại dự đoán đã có. Hai manifest phải có cùng ảnh và thứ tự frame.
 
-## Cấu hình và kết quả tham chiếu
-
-`configs/selected.json` là cấu hình chính thức từ 17/11/2026. Cùng cache YOLOX-X epoch 15, hai cấu hình được chấm trên 48 sequence, 118.632 frame và 114.097 box GT. Các tỷ lệ trong bảng tính theo phần trăm.
-
-| Cấu hình | HOTA ↑ | DetA ↑ | AssA ↑ | IDF1 ↑ | MOTA ↑ | IDSW ↓ | FP ↓ | FN ↓ |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| exsort trước khi áp mốc theo FPS | 56,52 | 59,12 | 55,38 | 71,65 | 76,63 | 40 | 7.006 | 19.621 |
-| exsort 1 giây ngoài mask, 2 giây chạm mask | 56,43 | 58,96 | 55,37 | 71,45 | 75,95 | 28 | 8.380 | 19.034 |
-
-Mốc 1/2 giây đã được thử trên val và được chọn làm cấu hình chính thức sau khi xem kết quả test. Bản này giảm FN và ID switch trong chuỗi output, đồng thời tăng FP và giảm MOTA. Xem [lịch sử tuning](docs/TUNING.md) để phân biệt các vòng đánh giá.
-
-**Các điểm dưới đây thuộc GT snapshot của lượt chạy 28–29/10/2026, trước lần sửa annotation 31/10–01/11. Chúng không phải kết quả trên GT hiện tại.**
-
-| Method, test cũ | IDSW | HOTA↑ | DetA↑ | AssA↑ | IDF1↑ | MOTA↑ | FP↓ | FN↓ |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| TrackTrack full ReID |131|53,8074|60,5060|49,4444|63,1429|78,6141|4.743|19.427|
-| exsort snapshot 29/10 |39|57,0077|59,7425|55,5639|71,7511|76,8373|7.066|19.215|
-
-exsort tốt hơn HOTA/IDF1/IDSW ở lượt này, nhưng FP nhiều hơn và MOTA thấp hơn TrackTrack. Hai pipeline có NMS/postprocessing khác nhau, nên không quy toàn bộ chênh lệch cho association hoặc ReID. Test đã từng được xem trong quá trình nghiên cứu trước đó; không mô tả đây là một test hoàn toàn chưa từng tiếp xúc. Lưu ý thêm sự chi phối của sequence morongmo trong pooled val và tương quan cùng cảnh; xem [TUNING.md](docs/TUNING.md).
-
-## Cấu trúc repo và nguồn tham khảo
+## Cấu trúc repo
 
 ```text
-exsort/core.py                    # thuật toán mới nhất; đổi import để portable
-exsort/legacy.py                  # primitive/glare/recovery kế thừa
-exsort/vendor/ocsort/             # OC-SORT Kalman/ORU và association
-exsort/cache.py                   # inference và cache/import/verify
-exsort/runner.py                  # replay/checkpoint/freeze/test/rescore
-exsort/tuning.py                  # SMAC và ablation trên val
-configs/                         # selected, baseline, search, split
-docs/                            # method, tuning, legacy cache
-history/                         # hash gốc và số liệu lịch sử, không chứa dữ liệu ảnh
-tests/                           # kiểm tra tích hợp nhỏ
+exsort/tracker.py        # Ex-Sort
+exsort/api.py            # kiểm tra cấu hình, tạo tracker
+exsort/vendor/ocsort/    # Kalman, ORU và hàm ghép của OC-SORT
+exsort/cache.py          # inference YOLOX-X, mask glare, cache
+exsort/dataset.py        # manifest, split, GT
+exsort/runner.py         # replay, checkpoint, khóa selection, đánh giá test, chấm lại
+exsort/scoring.py        # TrackEval
+exsort/tuning.py         # SMAC3 trên val
+configs/final.json       # cấu hình cuối
+configs/search.json      # miền tìm kiếm mặc định của tune
+configs/split_seed20261024.json
+docs/                    # phương pháp, chọn tham số, kiểm tra
+tests/                   # test CPU trên dữ liệu tổng hợp
 ```
 
-Phát triển từ các thành phần và ý tưởng của [OC-SORT](https://github.com/noahcao/OC_SORT), [TrackTrack](https://github.com/kamkyu94/TrackTrack), [ByteTrack](https://github.com/ifzhang/ByteTrack), [FilterPy](https://github.com/rlabbe/filterpy), [SMAC3](https://github.com/automl/SMAC3) và [TrackEval](https://github.com/JonathonLuiten/TrackEval). Giữ attribution/license các thành phần vendored ở [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Không bao gồm dataset, weight, ReID model, token, log cá nhân hoặc các script di chuyển/xóa dữ liệu của máy nghiên cứu.
-
-Phạm vi đã kiểm tra và khác biệt số học khi inference mới được ghi tại [VERIFICATION.md](docs/VERIFICATION.md).
+Xây dựng từ [OC-SORT](https://github.com/noahcao/OC_SORT), [ByteTrack](https://github.com/ifzhang/ByteTrack), [TrackTrack](https://github.com/kamkyu94/TrackTrack), [FilterPy](https://github.com/rlabbe/filterpy), [SMAC3](https://github.com/automl/SMAC3) và [TrackEval](https://github.com/JonathonLuiten/TrackEval). Giấy phép các thành phần này: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Kết quả kiểm tra bản phát hành: [docs/VERIFICATION.md](docs/VERIFICATION.md).

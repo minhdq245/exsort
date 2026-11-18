@@ -4,7 +4,6 @@ import copy
 import io
 import json
 import os
-import pickle
 from pathlib import Path
 import subprocess
 import sys
@@ -78,7 +77,7 @@ class PipelineTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.val, self.test = make_fixture(self.root)
-        self.config = read(ROOT/"configs/selected.json")
+        self.config = read(ROOT/"configs/final.json")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -117,7 +116,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_cli_tune_freeze_test_resume_and_tamper_rejection(self):
         search = self.root/"search.json"
-        save(search, dict(numeric_search=dict(DET=[.23, .28]), trials=3, seed=7))
+        save(search, dict(numeric_search=dict(IOU=[.25, .35]), trials=3, seed=7))
         tune = self.root/"tuning"
         command("tune", "--manifest", self.root/"val.json", "--cache", self.root/"val_cache",
                 "--search", search, "--output", tune, "--workers", 1)
@@ -138,30 +137,18 @@ class PipelineTests(unittest.TestCase):
         command("tune", "--manifest", self.root/"test.json", "--cache", self.root/"test_cache",
                 "--search", search, "--output", self.root/"invalid", "--workers", 1, success=False)
         modified = read(tune/"selection.json")
-        modified["config"]["params"]["DET"] = .8
+        modified["config"]["params"]["IOU"] = .5
         save(tune/"selection.json", modified)
         command(*args, success=False)
 
-    def test_unique_and_ambiguous_recovery(self):
-        empty = np.zeros((512, 512), bool)
-        config = copy.deepcopy(self.config)
-        config["params"].update(BIRTH_POLICY="iom_active", INIT=0.)
-        model = create_tracker(config, fps=22)
-        for k in range(1, 7):
-            box = np.array([.30 if k <= 3 else .45, .5, .1, .4], np.float32)
-            out = model.step([dict(box=box, conf=.9)], 512, 512, k, empty)
-        self.assertEqual((len(model.tracks), len(out), out[0].id), (1, 1, 1))
-        model = create_tracker(config, fps=22)
-        for k in range(1, 4):
-            model.step([dict(box=np.array([x, .5, .1, .6], np.float32), conf=.9) for x in (.2, .6)], 512, 512, k, empty)
-        for k in range(4, 7):
-            out = model.step([dict(box=np.array([.4, .5, .1, .6], np.float32), conf=.9)], 512, 512, k, empty)
-        self.assertEqual([(t.id, t.kf.time_since_update) for t in out], [(1, 3), (2, 3), (3, 0)])
-        self.assertEqual(len(model.tracks), 3)
-
-    def test_selected_output_budget_and_memory(self):
+    def test_config_keys_and_fps_are_checked(self):
         with self.assertRaisesRegex(ValueError, "positive sequence FPS"):
             create_tracker(self.config)
+        for change in (dict(LOW=.1), dict(DET=.7), dict(MIN_HITS=0)):
+            config = copy.deepcopy(self.config)
+            config["params"].update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                create_tracker(config, fps=25)
         self.assertEqual(self.val["sequences"]["train_scene"]["fps"], 22)
         self.assertEqual(self.test["sequences"]["test_scene"]["fps"], 25)
         old_manifest = copy.deepcopy(self.val)
@@ -169,80 +156,79 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(replay_fps(old_manifest, "train_scene"), 22)
         self.assertEqual(image_identity(self.val), image_identity(old_manifest))
 
+    def test_unique_and_ambiguous_recovery(self):
+        empty = np.zeros((512, 512), bool)
+        det = lambda *xs: [dict(box=np.array([x, .5, .1, .4], np.float32), conf=.9) for x in xs]
+        # A new track confirmed next to one lost track takes its ID.
+        model = create_tracker(self.config, fps=22)
+        for k, xs in enumerate([(.30,), (.30,), (.30,), (.30, .45), (.45,), (.45,)], 1):
+            out = model.step(det(*xs), 512, 512, empty)
+        self.assertEqual([(t.id, t.kf.time_since_update) for t in out], [(1, 0)])
+        self.assertEqual(len(model.tracks), 1)
+        # A lost track blocks a new track at a nearby position.
+        model.step([], 512, 512, empty)
+        model.step(det(.52), 512, 512, empty)
+        self.assertEqual([t.id for t in model.tracks], [1])
+        # With two lost candidates the new track keeps its own ID.
+        model = create_tracker(self.config, fps=22)
+        for xs in [(.2, .6), (.2, .6), (.2, .6), (.2, .6, .4), (.4,), (.4,)]:
+            out = model.step(det(*xs), 512, 512, empty)
+        self.assertEqual([(t.id, t.kf.time_since_update) for t in out], [(3, 0)])
+        self.assertEqual(sorted(t.id for t in model.tracks), [1, 2, 3])
+
+    def test_glare_output_limit_and_memory(self):
         empty = np.zeros((512, 512), bool)
         glare = empty.copy()
-        glare[160, 256] = True
+        glare[160, 256] = True  # inside the head band of the box below
         rows = [dict(box=[.5, .5, .2, .4], conf=.9)]
+        limit = self.config["params"]["GLARE_COAST_SECONDS"]
         for fps in (19, 22, 25):
             with self.subTest(fps=fps):
                 model = create_tracker(self.config, fps=fps)
-                for frame in range(1, 4):
-                    model.step(rows, 512, 512, frame, empty)
-                for age in range(1, 2 * fps + 2):
-                    has_glare = age > fps + 1
-                    out = model.step([], 512, 512, age + 3, glare if has_glare else empty)
-                    expect_box = age <= fps or (has_glare and age <= 2 * fps)
-                    self.assertEqual([t.id for t in out], [1] if expect_box else [])
+                for _ in range(3):
+                    model.step(rows, 512, 512, empty)
+                # One clock from the last match; a box is reported only in glare frames.
+                for age in range(1, int(2 * limit * fps) + 2):
+                    has_glare = age % 3 != 0
+                    out = model.step([], 512, 512, glare if has_glare else empty)
+                    self.assertEqual([t.id for t in out], [1] if has_glare and age <= limit * fps else [])
                     self.assertEqual([t.id for t in model.tracks], [1])
-                out = model.step(rows, 512, 512, 2 * fps + 5, empty)
+                out = model.step(rows, 512, 512, empty)
                 self.assertEqual([t.id for t in out], [1])
 
-    def test_coast_limits_use_current_mask_and_share_one_clock(self):
-        config = copy.deepcopy(self.config)
-        config["params"].update(BLIND_COAST_SECONDS=.75, GLARE_COAST_SECONDS=2.5)
+    def test_credibility_rules(self):
         empty = np.zeros((512, 512), bool)
         glare = empty.copy()
         glare[160, 256] = True
-        rows = [dict(box=[.5, .5, .2, .4], conf=.9)]
-        for fps in (19, 22, 25):
-            with self.subTest(fps=fps):
-                model = create_tracker(config, fps=fps)
-                for frame in range(1, 4):
-                    model.step(rows, 512, 512, frame, empty)
-                for age in range(1, int(2.5 * fps) + 2):
-                    has_glare = age > .75 * fps and age % 2 == 1
-                    limit = 2.5 if has_glare else .75
-                    out = model.step([], 512, 512, age + 3, glare if has_glare else empty)
-                    self.assertEqual([t.id for t in out], [1] if age <= limit * fps else [])
-                    self.assertEqual([t.id for t in model.tracks], [1])
-
-    def test_final_credibility_rules(self):
-        config = read(ROOT/"configs/final.json")
-        self.assertTrue(config["params"]["CREDIBILITY"])
-        empty = np.zeros((512, 512), bool)
-        glare = empty.copy()
-        glare[160, 256] = True
-        box = [.5, .5, .2, .4]
-        det = lambda conf: [dict(box=box, conf=conf)]
+        det = lambda conf: [dict(box=[.5, .5, .2, .4], conf=conf)]
         fps = 20
         # Confirmation counts only credible detections (score >= INIT): 0.9, 0.4, 0.4 is not enough.
-        model = create_tracker(config, fps=fps)
-        outs = [model.step(det(c), 512, 512, k, empty) for k, c in enumerate((.9, .4, .4, .9, .9), 1)]
+        model = create_tracker(self.config, fps=fps)
+        outs = [model.step(det(c), 512, 512, empty) for c in (.9, .4, .4, .9, .9)]
         self.assertEqual([len(o) for o in outs], [0, 0, 0, 0, 1])
-        off = copy.deepcopy(config)
-        off["params"]["CREDIBILITY"] = False
-        model = create_tracker(off, fps=fps)
-        outs = [model.step(det(c), 512, 512, k, empty) for k, c in enumerate((.9, .4, .4), 1)]
-        self.assertEqual(len(outs[-1]), 1)
-        # A glare coast box needs a credible mean score of the matched detections.
+        # A detection below INIT cannot start a track.
+        model = create_tracker(self.config, fps=fps)
+        model.step(det(.5), 512, 512, empty)
+        self.assertEqual(model.tracks, [])
+        # A glare box needs a credible mean score of the matched detections; there is no output without glare.
         for scores, coasts in [((.9, .9, .9), True), ((.9, .7, .7) + (.3,) * 6, False)]:
             with self.subTest(scores=scores):
-                model = create_tracker(config, fps=fps)
-                for k, c in enumerate(scores, 1):
-                    model.step(det(c), 512, 512, k, empty)
-                out = model.step([], 512, 512, len(scores) + 1, glare)
+                model = create_tracker(self.config, fps=fps)
+                for c in scores:
+                    model.step(det(c), 512, 512, empty)
+                out = model.step([], 512, 512, glare)
                 self.assertEqual([t.id for t in out], [1] if coasts else [])
-                self.assertEqual(model.step([], 512, 512, len(scores) + 2, empty), [])  # no blind coast
-        # Low-score matches keep the track alive but its box stops after MAX_AGE frames without a credible one.
-        model = create_tracker(config, fps=fps)
-        for k in range(1, 4):
-            model.step(det(.9), 512, 512, k, empty)
-        max_age = config["params"]["MAX_AGE"]
-        for k in range(4, 4 + max_age + 1):
-            out = model.step(det(.3), 512, 512, k, empty)
-            self.assertEqual([t.id for t in out], [1] if k - 3 <= max_age else [])
+                self.assertEqual(model.step([], 512, 512, empty), [])
+        # Low-score matches keep the track alive, but its box stops after MAX_AGE frames without a credible match.
+        model = create_tracker(self.config, fps=fps)
+        for _ in range(3):
+            model.step(det(.9), 512, 512, empty)
+        max_age = self.config["params"]["MAX_AGE"]
+        for k in range(1, max_age + 2):
+            out = model.step(det(.3), 512, 512, empty)
+            self.assertEqual([t.id for t in out], [1] if k <= max_age else [])
         self.assertEqual([t.id for t in model.tracks], [1])
-        out = model.step(det(.9), 512, 512, 5 + max_age, empty)
+        out = model.step(det(.9), 512, 512, empty)
         self.assertEqual([t.id for t in out], [1])
 
     def test_grouped_scoring_matches_native_trackeval(self):
@@ -274,51 +260,6 @@ class PipelineTests(unittest.TestCase):
         for family in expected:
             for field in expected[family]:
                 np.testing.assert_allclose(actual[family][field], expected[family][field], atol=1e-12, rtol=1e-12, err_msg=f"{family}.{field}")
-
-    def test_legacy_val_and_test_mask_mapping_import(self):
-        from argparse import Namespace
-        from exsort.cache import import_legacy, verify
-        legacy = self.root/"legacy_val"
-        (legacy/"mm").mkdir(parents=True)
-        save(legacy/"meta.json", dict(sequences={"train_scene": dict(n=24, half=12, nval=12)}))
-        det = np.tile(np.array([30, 20, 50, 60, .9], np.float32), (12, 1))
-        masks = np.zeros((12, 32768), dtype=np.uint8)
-        masks[:, 100] = 255
-        with (legacy/"mm/train_scene.pkl").open("wb") as f:
-            # Deliberately stale/invalid cached GT is ignored in favor of current manifest GT.
-            pickle.dump((12, 100, 80, np.arange(13), det, "stale_gt_not_for_scoring", None), f)
-        np.save(legacy/"mm/train_scene.npy", masks)
-        args = Namespace(trust_legacy_images=True, manifest=self.root/"val.json", source=legacy,
-                         output=self.root/"imported_val", format="val-mm", mask_map=None, detector_sha256="a"*64)
-        with contextlib.redirect_stdout(io.StringIO()):
-            import_legacy(args)
-        verify(args.output, self.val)
-        with np.load(args.output/"train_scene/00000000.npz") as z:
-            np.testing.assert_array_equal(z["detections"], det)
-            np.testing.assert_array_equal(z["masks"], masks)
-        block = self.root/"old_detections.npz"
-        np.savez(block, start=0, end=12, off65=np.arange(13), det65=det)
-        actual_masks = self.root/"moved_masks.npz"
-        np.savez(actual_masks, masks=masks)
-        vanished = str(self.root/"vanished_masks.npz")
-        protocol = self.root/"old_test_protocol.json"
-        save(protocol, dict(detector_model_sha256="a"*64, sequences={"test_scene": dict(frames=12, width=100, height=80,
-              rebuild_image_cache=False, blocks=[dict(path=str(block), sha256=sha(block), start=0, end=12)],
-              image_chunks=[dict(path=vanished, sha256=sha(actual_masks), start=0, end=12)])}))
-        mapping = self.root/"mask_map.json"
-        save(mapping, dict(mapping={vanished: str(actual_masks)}))
-        args = Namespace(trust_legacy_images=True, manifest=self.root/"test.json", source=protocol,
-                         output=self.root/"imported_test", format="test-blocks", mask_map=mapping, detector_sha256=None)
-        with contextlib.redirect_stdout(io.StringIO()):
-            import_legacy(args)
-        verify(args.output, self.test)
-        with np.load(args.output/"test_scene/00000000.npz") as z:
-            np.testing.assert_array_equal(z["masks"], masks)
-        # A removed mask cannot be silently replaced with zeros.
-        args.output = self.root/"missing_mask_import"
-        args.mask_map = None
-        with self.assertRaises(FileNotFoundError):
-            import_legacy(args)
 
     def test_new_gt_can_rescore_without_replay(self):
         output = self.root/"original_test"

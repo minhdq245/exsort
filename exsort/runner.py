@@ -39,8 +39,7 @@ def track_one(job):
         if d["identity"] != track_identity or sha(target) != d["sha256"]:
             raise ValueError("Completed tracking result changed")
         return d
-    fps = replay_fps(manifest, name) if config["params"]["COAST_MODE"] == "fps_budget" else None
-    model = create_tracker(config, fps=fps)
+    model = create_tracker(config, fps=replay_fps(manifest, name))
     checkpoint = folder / "checkpoint.pkl.gz"
     current, position = 0, 0
     if checkpoint.exists():
@@ -69,13 +68,13 @@ def track_one(job):
                 i = k - b["start"]
                 rows = []
                 for r in det[off[i]:off[i+1]]:
-                    if r[4] < min(config["params"]["DET"], config["params"]["LOW"]):
+                    if r[4] < config["params"]["DET"]:
                         continue
                     x1, y1, x2, y2 = r[:4]
                     rows.append(dict(box=np.array([(x1+x2)/2/q["width"], (y1+y2)/2/q["height"],
                                                    (x2-x1)/q["width"], (y2-y1)/q["height"]], np.float32), conf=float(r[4])))
                 sat = np.unpackbits(masks[i]).reshape(512, 512).astype(bool)
-                tracks = model.step(rows, q["width"], q["height"], k+1, sat=sat)
+                tracks = model.step(rows, q["width"], q["height"], sat=sat)
                 lines = []
                 decimals = 2 if manifest["role"] == "val" else 4
                 for tr in tracks:
@@ -148,12 +147,10 @@ def worker_manifest(manifest, name, fps=None):
 
 def replay(manifest, cache, config, output, workers=4, pool=None, validated=False):
     config = validate(config)
-    fps_by_sequence = {}
-    if config["params"]["COAST_MODE"] == "fps_budget":
-        fps_by_sequence = {s: replay_fps(manifest, s) for s in manifest["sequences"]}
+    fps_by_sequence = {s: replay_fps(manifest, s) for s in manifest["sequences"]}
     output = Path(output)
     meta = open_cache(cache, manifest) if validated else verify(cache, manifest)
-    if config["params"]["LOW"] < meta["score_floor"] or config["params"]["NMS"] > meta["nms"]:
+    if config["params"]["DET"] < meta["score_floor"] or config["params"]["NMS"] > meta["nms"]:
         raise ValueError("Config requires detections removed by the cache")
     blocks = {s: read(Path(cache)/s/"index.json")["blocks"] for s in manifest["sequences"]}
     track_identity = key(dict(cache=meta["identity"], blocks=blocks, config=config, source=source_signature(),

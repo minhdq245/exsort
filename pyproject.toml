@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exsort-research"
-version = "0.1.0"
-description = "Explained-absence multi-object tracking with cached validation tuning"
+version = "1.0.0"
+description = "Ex-Sort: multi-object tracking with glare-explained absence"
 requires-python = ">=3.10,<3.13"
 dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<1.16", "filterpy==1.4.5", "lap==0.5.13", "opencv-python>=4.8,<6", "psutil>=5.9"]
 

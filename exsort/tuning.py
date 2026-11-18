@@ -1,19 +1,19 @@
-"""Sequential SMAC3 RF Bayesian proposals, full-val feedback, no test reads."""
+"""Sequential SMAC3 search on validation only. Selection: highest validation MOTA."""
 import copy
-import math
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import time
-from .api import COAST_LIMITS, NUMERIC, validate
+from .api import INTEGER, PARAMS, validate
 from .cache import verify
 from .io import key, read, save, source_signature
 from .runner import freeze, replay
 
 
-def ranking(row, floor):
+def ranking(row):
+    """Highest MOTA first; ties go to higher HOTA, then higher IDF1, then fewer ID switches."""
     s = row["summary"]
-    return (s["MOTA"] < floor-1e-10, -s["HOTA"], -s["IDF1"], -s["MOTA"], s["IDSW"])
+    return (-s["MOTA"], -s["HOTA"], -s["IDF1"], s["IDSW"])
 
 
 def tune(args):
@@ -24,16 +24,13 @@ def tune(args):
     manifest = read(args.manifest)
     if manifest["role"] != "val":
         raise ValueError("Tuning reads validation manifests only")
-    initial, baseline = validate(read(args.initial_config)), validate(read(args.baseline))
+    initial = validate(read(args.initial_config))
     space = read(args.search)
-    fixed_floor = space.get("mota_floor")
-    if fixed_floor is not None and (type(fixed_floor) not in (int, float) or not math.isfinite(fixed_floor)):
-        raise ValueError("The configured MOTA floor must be a finite number")
     meta = verify(args.cache, manifest)
     root = Path(args.output)
     protocol = dict(manifest_signature=manifest["signature"], cache_identity=meta["identity"],
-                    source_signature=source_signature(), initial=initial, baseline=baseline, search=space,
-                    selection="max pooled HOTA subject to baseline MOTA; tie IDF1, MOTA, IDSW",
+                    source_signature=source_signature(), initial=initial, search=space,
+                    selection="max pooled validation MOTA; ties: HOTA, IDF1, fewer IDSW",
                     optimizer="SMAC3 2.4.1 RF + LogEI; sequential ask/tell, full validation every trial",
                     test_accessed=False)
     if (root/"protocol.json").exists() and read(root/"protocol.json") != protocol:
@@ -44,9 +41,9 @@ def tune(args):
         return
     cs = ConfigurationSpace(seed=space["seed"])
     for name, limits in space["numeric_search"].items():
-        if name not in NUMERIC | COAST_LIMITS or name not in initial["params"]:
-            raise ValueError(f"Numeric hyperparameter {name} must be supported and present in the initial configuration")
-        cls = Integer if name in ("MAX_AGE", "MIN_HITS") else Float
+        if name not in PARAMS:
+            raise ValueError(f"Unknown parameter {name}")
+        cls = Integer if name in INTEGER else Float
         cs.add(cls(name, tuple(limits), default=initial["params"][name]))
     scenario = Scenario(cs, name="exsort_rf", output_directory=root/"smac", deterministic=True,
                         n_trials=space["trials"], seed=space["seed"])
@@ -56,18 +53,13 @@ def tune(args):
                intensifier=SMAC.get_intensifier(scenario, max_config_calls=1), overwrite=False, logging_level=30)
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=mp.get_context("spawn")) as pool:
         def evaluate(config):
+            # A finished trial is reused: replay checks its protocol, GT and prediction hashes.
             folder = root/"evaluations"/key(config)[:20]
-            if (folder/"complete.json").exists():
-                # replay verifies protocol, input GT and cached prediction hashes before reuse.
-                pass
             result = replay(manifest, args.cache, config, folder, pool=pool, validated=True)
             if result is None:
                 raise RuntimeError("Replay paused. Remove STOP in trial directory and rerun.")
             return result
 
-        base_result = evaluate(baseline)
-        floor = base_result["summary"]["MOTA"] if fixed_floor is None else fixed_floor
-        save(root/"baseline.json", dict(summary=base_result["summary"], MOTA_floor=floor, config=baseline))
         evaluate(initial)
         pending = root/"pending.json"
         while opt.runhistory.finished < space["trials"]:
@@ -90,56 +82,24 @@ def tune(args):
             save(pending, dict(config=dict(info.config), instance=info.instance, seed=info.seed, budget=info.budget))
             config = copy.deepcopy(initial)
             for k, v in dict(info.config).items():
-                config["params"][k] = int(v) if k in ("MAX_AGE", "MIN_HITS") else float(v)
+                config["params"][k] = int(v) if k in INTEGER else float(v)
             began = time.perf_counter()
             result = evaluate(config)
             s = result["summary"]
-            cost = 100-s["HOTA"] if s["MOTA"] >= floor-1e-10 else 200+floor-s["MOTA"]
+            cost = 100-s["MOTA"]
             opt.tell(info, TrialValue(cost=cost, time=time.perf_counter()-began,
                                      additional_info=dict(config_key=key(config), summary=s)))
             # SMAC persists runhistory on tell; pending file repairs interruption between ask/tell.
             save(pending, {})
             rows = [read(p) for p in (root/"evaluations").glob("*/metrics.json")]
-            rows.sort(key=lambda r: ranking(r, floor))
+            rows.sort(key=ranking)
             save(root/"ranked_results.json", rows)
             save(root/"best.json", rows[0])
             save(root/"state.json", dict(finished=opt.runhistory.finished, trials=space["trials"], best=rows[0]["summary"]))
             print(f"Trial {opt.runhistory.finished}/{space['trials']}: {s}", flush=True)
         rows = [read(p) for p in (root/"evaluations").glob("*/metrics.json")]
-        rows.sort(key=lambda r: ranking(r, floor))
+        rows.sort(key=ranking)
         best = rows[0]
         freeze(best["config"], manifest, args.cache, best["summary"], root/"selection.json")
-        save(root/"complete.json", dict(completed=True, test_accessed=False, best=best["summary"], MOTA_floor=floor))
+        save(root/"complete.json", dict(completed=True, test_accessed=False, best=best["summary"]))
         print("Frozen selection:", root/"selection.json", best["summary"], flush=True)
-
-
-def ablate(args):
-    """Small predeclared variants around one anchor; full val, same floor rule."""
-    manifest, anchor = read(args.manifest), validate(read(args.config))
-    if manifest["role"] != "val":
-        raise ValueError("Ablation only accepts val")
-    meta = verify(args.cache, manifest)
-    variants = read(args.variants)
-    root = Path(args.output)
-    protocol = dict(manifest=manifest["signature"], cache=meta["identity"], source=source_signature(),
-                    anchor=anchor, variants=variants)
-    if (root/"protocol.json").exists() and read(root/"protocol.json") != protocol:
-        raise ValueError("Ablation protocol changed")
-    save(root/"protocol.json", protocol)
-    results = []
-    with ProcessPoolExecutor(max_workers=args.workers, mp_context=mp.get_context("spawn")) as pool:
-        for label, changes in [("anchor", {})] + list(variants.items()):
-            if Path(label).name != label or label in (".", ".."):
-                raise ValueError("Unsafe label")
-            config = copy.deepcopy(anchor)
-            config["params"].update(changes)
-            result = replay(manifest, args.cache, config, root/label, pool=pool, validated=True)
-            if result is None:
-                return
-            results.append(dict(label=label, **result))
-            save(root/"results.json", results)
-            print(label, result["summary"], flush=True)
-    floor = results[0]["summary"]["MOTA"]
-    results.sort(key=lambda r: ranking(r, floor))
-    save(root/"best_config.json", results[0]["config"])
-    freeze(results[0]["config"], manifest, args.cache, results[0]["summary"], root/"selection.json", "validation ablation")

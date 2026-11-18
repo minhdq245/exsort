@@ -44,34 +44,19 @@ def parse_args():
     cache.add_argument("--batch-size", type=int, default=4)
     cache.add_argument("--workers", type=int, default=4)
     cache.add_argument("--block-frames", type=int, default=512)
-    imp = sub.add_parser("import-cache", help="Import existing trusted research caches without GPU inference")
-    imp.add_argument("--manifest", required=True)
-    imp.add_argument("--source", required=True)
-    imp.add_argument("--output", required=True)
-    imp.add_argument("--format", required=True, choices=["val-mm", "test-blocks"])
-    imp.add_argument("--mask-map")
-    imp.add_argument("--detector-sha256", help="Required provenance for a legacy val cache")
-    imp.add_argument("--trust-legacy-images", action="store_true")
     check = sub.add_parser("verify-cache")
     manifest_cache(check)
     val = sub.add_parser("validate", help="Replay one config on dense val and freeze it")
     manifest_cache(val)
-    val.add_argument("--config", default="configs/selected.json")
+    val.add_argument("--config", default="configs/final.json")
     val.add_argument("--output", required=True)
     val.add_argument("--workers", type=int, default=4)
     tune = sub.add_parser("tune", help="Sequential SMAC Bayesian optimization, val only")
     manifest_cache(tune)
-    tune.add_argument("--initial-config", default="configs/selected.json")
-    tune.add_argument("--baseline", default="configs/baseline.json")
-    tune.add_argument("--search", default="configs/search_local.json")
+    tune.add_argument("--initial-config", default="configs/final.json")
+    tune.add_argument("--search", default="configs/search.json")
     tune.add_argument("--output", required=True)
     tune.add_argument("--workers", type=int, default=4)
-    abl = sub.add_parser("ablate")
-    manifest_cache(abl)
-    abl.add_argument("--config", default="configs/selected.json")
-    abl.add_argument("--variants", default="configs/ablations.json")
-    abl.add_argument("--output", required=True)
-    abl.add_argument("--workers", type=int, default=4)
     test = sub.add_parser("evaluate", help="One frozen selection on dense full test")
     manifest_cache(test)
     test.add_argument("--selection", required=True)
@@ -86,7 +71,7 @@ def parse_args():
     args = p.parse_args()
     if hasattr(args, "workers") and args.workers < 0:
         p.error("workers must be nonnegative")
-    if args.command not in ("cache", "prepare", "import-cache", "verify-cache") and args.workers < 1:
+    if args.command not in ("cache", "prepare", "verify-cache") and args.workers < 1:
         p.error("CPU replay requires at least one worker")
     return args
 
@@ -100,11 +85,6 @@ def dispatch(args):
             raise ValueError("batch-size, block-frames, height and width must be positive")
         from .cache import yolox_cache
         yolox_cache(args)
-    elif args.command == "import-cache":
-        if args.format == "val-mm" and not args.detector_sha256:
-            raise ValueError("val-mm requires --detector-sha256 from the original cache provenance")
-        from .cache import import_legacy
-        import_legacy(args)
     elif args.command == "verify-cache":
         from .cache import verify
         from .io import read
@@ -118,14 +98,11 @@ def dispatch(args):
             raise ValueError("validate only accepts a val manifest")
         result = replay(manifest, args.cache, config, args.output, args.workers)
         if result:
-            freeze(config, manifest, args.cache, result["summary"], Path(args.output)/"selection.json", "published config revalidated")
+            freeze(config, manifest, args.cache, result["summary"], Path(args.output)/"selection.json", "configuration replayed on validation")
             print(result["summary"])
     elif args.command == "tune":
         from .tuning import tune
         tune(args)
-    elif args.command == "ablate":
-        from .tuning import ablate
-        ablate(args)
     elif args.command == "evaluate":
         from .runner import evaluate_test
         evaluate_test(args)
