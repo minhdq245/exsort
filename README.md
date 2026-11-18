@@ -24,7 +24,7 @@ Cấu hình được chọn trên val rồi đánh giá một lần trên test. 
 5. Track mới vừa xác nhận nhận lại ID của track cũ nếu có đúng một track đang mất ở gần.
 6. Xuất box Kalman cho track confirmed có detection ghép. Track đang mất chỉ xuất box dự đoán khi frame hiện tại có glare ở vùng đầu, chưa quá 1 giây từ lần ghép cuối, box dự đoán còn khớp box ghép cuối (IoU ≥ 0,9) và trung bình score các detection đã ghép ≥ 0,6. Track không có detection đáng tin trong hơn 120 frame thì không xuất box nhưng vẫn giữ ID.
 
-Chi tiết từng bước, tham số và API Python: [docs/METHOD.md](docs/METHOD.md).
+Chi tiết từng bước, tham số và API Python: [docs/METHOD.md](docs/METHOD.md). Giải thích dài hơn, kèm ablation trên val và các đánh đổi: [docs/GIAI_THICH_EXSORT.md](docs/GIAI_THICH_EXSORT.md).
 
 ```python
 from exsort.api import create_tracker
