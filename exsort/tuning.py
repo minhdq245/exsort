@@ -1,4 +1,4 @@
-"""Sequential SMAC3 search on validation only. Selection: highest validation MOTA."""
+"""Sequential SMAC3 search on validation only. Cost: 200 - HOTA - MOTA."""
 import copy
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
@@ -11,9 +11,9 @@ from .runner import freeze, replay
 
 
 def ranking(row):
-    """Highest MOTA first; ties go to higher HOTA, then higher IDF1, then fewer ID switches."""
+    """Highest HOTA + MOTA first; ties go to higher MOTA, then higher IDF1, then fewer ID switches."""
     s = row["summary"]
-    return (-s["MOTA"], -s["HOTA"], -s["IDF1"], s["IDSW"])
+    return (-s["HOTA"]-s["MOTA"], -s["MOTA"], -s["IDF1"], s["IDSW"])
 
 
 def tune(args):
@@ -30,7 +30,7 @@ def tune(args):
     root = Path(args.output)
     protocol = dict(manifest_signature=manifest["signature"], cache_identity=meta["identity"],
                     source_signature=source_signature(), initial=initial, search=space,
-                    selection="max pooled validation MOTA; ties: HOTA, IDF1, fewer IDSW",
+                    selection="max pooled validation HOTA + MOTA; ties: MOTA, IDF1, fewer IDSW",
                     optimizer="SMAC3 2.4.1 RF + LogEI; sequential ask/tell, full validation every trial",
                     test_accessed=False)
     if (root/"protocol.json").exists() and read(root/"protocol.json") != protocol:
@@ -86,7 +86,7 @@ def tune(args):
             began = time.perf_counter()
             result = evaluate(config)
             s = result["summary"]
-            cost = 100-s["MOTA"]
+            cost = 200-s["HOTA"]-s["MOTA"]
             opt.tell(info, TrialValue(cost=cost, time=time.perf_counter()-began,
                                      additional_info=dict(config_key=key(config), summary=s)))
             # SMAC persists runhistory on tell; pending file repairs interruption between ask/tell.

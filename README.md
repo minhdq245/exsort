@@ -125,7 +125,7 @@ runs/val_final/
 python -m exsort tune --manifest runs/manifests/val.json --cache cache/val --output runs/tune --workers 8
 ```
 
-SMAC3 đề xuất tuần tự, mỗi trial replay toàn bộ val, chọn cấu hình có MOTA val cao nhất. Lệnh không đọc test. [Chi tiết](docs/TUNING.md)
+SMAC3 đề xuất tuần tự, mỗi trial replay toàn bộ val, chọn cấu hình có tổng HOTA + MOTA val cao nhất. Lệnh không đọc test. [Chi tiết](docs/TUNING.md)
 
 ## 6. Đánh giá test
 

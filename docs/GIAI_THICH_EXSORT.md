@@ -20,7 +20,7 @@ Ex-Sort còn dùng ba luật "detection đáng tin" (score ≥ 0,6). Ba luật n
 | Thành phần | Giá trị | Ghi chú |
 |---|---|---|
 | Detector | YOLOX-X, checkpoint epoch 15 | Chạy một lần, lưu cache |
-| Cache detection | score ≥ 0,001; NMS 0,65; tối đa 100 box/frame | Tracker chỉ dùng box có score ≥ `DET` = 0,1 |
+| Cache detection | score ≥ 0,1; NMS 0,65; tối đa 100 box/frame | Ex-Sort và mọi baseline dùng chung cache này |
 | Mask chói | resize 512×512, HSV, pixel có V ≥ 235 và S ≤ 89 | Tính từ ảnh, không học |
 | FPS | FPS thật của từng sequence | Đổi giây → số frame |
 
@@ -100,20 +100,20 @@ làm mất ID của họ. Tắt output thì giữ được ID, và khi họ có 
 
 ## 5. Tham số
 
-| Tham số | Giá trị | Nguồn |
-|---|---:|---|
-| `DET` | 0,1 | Dùng mọi detection có score ≥ 0,1. Lưới trên val: ngưỡng 0,15 / 0,20 / 0,25 / 0,30 cho HOTA 55,94 / 55,26 / 55,77 / 55,07, đều thấp hơn khi dùng 0,1 |
-| `INIT` | 0,6 | Tham số **duy nhất được chọn bằng lưới** trong bản cuối. Val (có luật 1 và 2, chưa có luật 3): 0,50 / 0,55 / **0,60** / 0,65 / 0,70 → MOTA 79,27 / 80,07 / **80,21** / 80,18 / 80,16 |
-| `NMS` | 0,6 | Làm tròn từ SMAC trên val (0,6022). Kiểm lại: 0,50 / 0,55 / 0,65 → HOTA 57,80 / 56,52 / 55,88 |
-| `IOU` | 0,3 | Làm tròn từ SMAC (0,2674); dùng cho ghép, IoM khi birth và ρ của axis gate |
-| `MIN_HITS` | 3 | Giá trị SMAC giữ nguyên; MIN_HITS = 2 cho HOTA 57,99 (không hơn) |
-| `MAX_AGE` | 120 frame | Giá trị trong cấu hình khởi đầu của các vòng tune trên val với detector epoch 15; không tune lại |
-| `HEAD_FRACTION` | 0,25 | Làm tròn từ SMAC (0,2603) |
-| `EV` | 0,9 | Làm tròn từ SMAC (0,8723) |
-| `GLARE_COAST_SECONDS` | 1,0 s | Làm tròn từ SMAC (1,165 s). Kiểm lại 2 s / 4 s: HOTA 57,97 / 57,97 (không hơn) |
+| Tham số | Giá trị | Miền tìm kiếm | Vai trò |
+|---|---:|---|---|
+| `DET` | 0,1 | Cố định | Score thấp nhất được dùng |
+| `INIT` | 0,6 | 0,50–0,70 | Score của detection đáng tin |
+| `NMS` | 0,6 | 0,30–0,65 | IoU để bỏ box trùng |
+| `IOU` | 0,3 | 0,15–0,50 | Ngưỡng ghép, IoM khi birth và ρ của axis gate |
+| `MIN_HITS` | 3 | 2–5 | Số detection đáng tin để xác nhận |
+| `MAX_AGE` | 120 frame | 20–180 | Giới hạn miss không có glare |
+| `HEAD_FRACTION` | 0,25 | 0,15–0,40 | Phần trên của box được kiểm tra glare |
+| `EV` | 0,9 | 0,30–0,90 | IoU tối thiểu giữa box dự đoán và box ghép cuối |
+| `GLARE_COAST_SECONDS` | 1,0 s | 1–4 | Thời gian coast tối đa |
 
-"Làm tròn từ SMAC": các giá trị lẻ là kết quả SMAC (tối ưu Bayes) trên val ở bản hai lượt ghép trước đó. Bản cuối làm
-tròn để ít chữ số "ma thuật" hơn. Bản làm tròn (r2) cho val HOTA 57,90, gần bản chưa tròn.
+Một lượt SMAC3 (tối ưu Bayes) trên val chọn cùng lúc tám tham số: 100 trial, seed 20261123, cost `200 − HOTA − MOTA`. Chi
+tiết ở mục 11 và [TUNING.md](TUNING.md).
 
 ---
 
@@ -123,7 +123,7 @@ Tất cả trên val. Mỗi hàng thêm một thay đổi vào hàng trên.
 
 | Bước | HOTA | DetA | AssA | IDF1 | MOTA | IDSW | FP | FN |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| r2: một lượt ghép, tham số làm tròn | 57,90 | 60,87 | 55,81 | 76,95 | 79,93 | 62 | 11 111 | 26 506 |
+| Một lượt ghép, chưa có ba luật | 57,90 | 60,87 | 55,81 | 76,95 | 79,93 | 62 | 11 111 | 26 506 |
 | + luật 2 (coast cần score TB ≥ 0,6) | 57,92 | 60,95 | 55,79 | 77,00 | 80,10 | 64 | 10 690 | 26 605 |
 | + luật 1 (confirm cần 3 det ≥ 0,6) | 58,00 | 61,00 | 55,89 | 77,12 | 80,21 | 59 | 10 483 | 26 615 |
 | **+ luật 3 (tắt output) = bản cuối** | **57,98** | **60,99** | **55,84** | **77,13** | **80,29** | **58** | **9 888** | **27 072** |
@@ -201,15 +201,16 @@ ByteTrack, BoT-SORT và TrackTrack (chỉ xuất track đang được ghép).
 
 **H: Dùng detection score 0,1 thì không sợ FP à?**
 Đ: Detection thấp chỉ được dùng để **nối tiếp** track đã có, không tạo track mới, không xác nhận track. Box từ chúng
-có precision 0,70 trên val, trên ngưỡng hòa vốn 0,5 của MOTA và 0,37 của DetA. Lưới ngưỡng 0,15–0,30 trên val đều kém hơn.
+có precision 0,70 trên val, trên ngưỡng hòa vốn 0,5 của MOTA và 0,37 của DetA. Trên val, bỏ detection dưới 0,60
+làm HOTA giảm 2,78 và MOTA giảm 1,96.
 
 **H: Tham số được chọn thế nào? Có tune trên test không?**
-Đ: Mọi lựa chọn dựa trên val, theo MOTA val cao nhất. Cấu hình được chốt rồi chạy test một lần. Chỉ `INIT` được chọn bằng
-lưới trong bản cuối; các giá trị còn lại làm tròn từ SMAC trên val hoặc giữ nguyên.
+Đ: Mọi lựa chọn dựa trên val. Một lượt SMAC3 gồm 100 trial tối thiểu `200 − HOTA − MOTA`; cấu hình có tổng HOTA + MOTA cao
+nhất được chốt rồi chạy test một lần.
 
 **H: Ba luật đáng tin có phải là heuristic thêm vào cho đẹp số không?**
 Đ: Chúng không có tham số mới; dùng lại ngưỡng birth, `MIN_HITS` và `MAX_AGE`. Ý tưởng chung là một track phải có bằng chứng
-"đây là người" ở cùng mức với lúc sinh track. Mỗi luật được giữ vì cải thiện MOTA trên val (bảng mục 6).
+"đây là người" ở cùng mức với lúc sinh track. Mỗi luật được giữ vì làm tăng tổng HOTA + MOTA trên val (bảng mục 6).
 
 **H: Sao không xóa track khi không có detection đáng tin?**
 Đ: Đã thử trên val: HOTA rơi xuống 53,29 vì người thật ở morongmo thường chỉ có detection thấp lâu. Tắt output giữ được ID.
@@ -217,7 +218,8 @@ lưới trong bản cuối; các giá trị còn lại làm tròn từ SMAC trê
 **H: Glare giúp gì cụ thể?**
 Đ: (1) frame mất có glare không tính vào tuổi track nên ID sống lâu hơn; (2) cho phép vẽ box dự đoán tối đa 1 s.
 Trên test, Ex-Sort có AssA và IDF1 cao nhất bảng (AssA 64,08 so với 56,59 của TrackTrack), dù không dùng ReID.
-(Muốn khẳng định phần đóng góp riêng của glare thì cần thêm ablation tắt mask trên val.)
+Trên val, tắt mask glare làm HOTA giảm 2,79, AssA giảm 4,69 và IDF1 giảm 5,37. Phần lớn đến từ (1): nếu glare không còn ngừng
+việc tính tuổi track thì HOTA giảm 2,64; nếu chỉ bỏ box dự đoán thì HOTA giảm 0,19.
 
 **H: Sao MOTA vẫn thua TrackTrack?**
 Đ: Chênh 0,11 điểm. Ex-Sort xuất thêm box để giảm FN và giữ ID, nên FP cao hơn 1 266 nhưng FN thấp hơn 1 110 và
@@ -230,17 +232,15 @@ IDSW thấp hơn 23. Tổng lỗi hai bên chỉ khác 133 trên 114 097 box GT.
 
 ## 11. Tiêu chí chọn trên val
 
-**Tiêu chí: chọn cấu hình có MOTA val cao nhất.** Bản cuối đứng đầu (80,29) trong mọi cấu hình chỉ xuất box dự đoán khi có
-glare. Các giá trị trong lưới cũng thắng theo cùng tiêu chí:
-- score tạo track 0,60 → MOTA 80,21 (cao nhất trong 0,50–0,70);
-- NMS 0,6, glare 1 s, `MIN_HITS` 3 đều cho MOTA cao hơn các giá trị thử khác.
+**Tiêu chí: tổng HOTA + MOTA trên val cao nhất**, vì đây là hai metric chính. Cost mà SMAC3 tối thiểu là `200 − HOTA − MOTA`.
 
-Chỉ các bản có coast mù có MOTA cao hơn (80,34–80,36). Chúng bị loại vì thiết kế: box dự đoán chỉ được vẽ khi glare giải thích
-việc mất detection.
+- Tám cấu hình Sobol và một cấu hình khởi đầu (từ các lần chạy sơ bộ trên cùng tập val) chạy trước, SMAC3 đề xuất 91 cấu hình
+  còn lại. Mỗi trial chạy toàn bộ 69 612 frame val.
+- Cấu hình khởi đầu có cost thấp nhất trong 100 trial và được chọn: HOTA 57,98, MOTA 80,29, IDF1 77,13, 58 IDSW.
+- Cấu hình tốt nhất do SMAC3 đề xuất: HOTA 57,98, MOTA 80,26, với `MIN_HITS` 2 và glare 1,03 s; các giá trị khác gần như trùng.
 
-Bản cuối không có HOTA val cao nhất: một bản trung gian có HOTA 58,00 so với 57,98, và bản hai lượt ghép dùng số SMAC chưa
-làm tròn có HOTA 58,20 nhưng MOTA chỉ 79,00. Các cấu hình gần đầu chỉ chênh nhau ≤ 0,22 HOTA trên val, trong khi HOTA của
-Ex-Sort đã cao nhờ giữ ID (AssA). Vì vậy MOTA được dùng làm tiêu chí chọn.
+Các bản có coast mù (mục 6) không nằm trong miền tìm kiếm: theo thiết kế, box dự đoán chỉ được vẽ khi glare giải thích việc mất
+detection.
 
 Phân tích lỗi (track ma, detection score thấp) dẫn tới ý tưởng của ba luật. Ba luật không có tham số và được giữ chỉ dựa trên
 số val.
