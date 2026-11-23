@@ -1,9 +1,9 @@
-# Constraints from the local environment used to verify this release.
-numpy==2.2.6
+# Constraints for reproducing the published numbers. numpy 1.26.4 needs opencv-python < 4.12.
+numpy==1.26.4
 scipy==1.15.3
 filterpy==1.4.5
 lap==0.5.13
-opencv-python==5.0.0.93
+opencv-python==4.11.0.86
 psutil==7.2.2
 smac==2.4.1
 ConfigSpace==1.2.2

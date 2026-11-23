@@ -9,6 +9,8 @@ Module [exsort/tracker.py](../exsort/tracker.py) được viết lại từ code
 | Val, 69.612 frame | 57,98 | 60,99 | 55,84 | 77,13 | 80,29 | 58 | 9.888 | 27.072 |
 | Test, 118.632 frame | 63,07 | 62,76 | 64,08 | 81,79 | 80,09 | 33 | 4.304 | 18.382 |
 
+Bảng trên được chạy với numpy 1.26.4 và scipy 1.15.3 ([requirements-tested.txt](../requirements-tested.txt)). Với numpy 2.2.6, test cho FP 4.303 và FN 18.381.
+
 ## Bộ test CPU
 
 `python -m unittest discover -s tests -v` chạy trên dữ liệu tổng hợp, không cần dataset hay weight:
@@ -23,6 +25,8 @@ Module [exsort/tracker.py](../exsort/tracker.py) được viết lại từ code
 - mọi trường HOTA/CLEAR/Identity/Count khớp TrackEval chạy từ file.
 
 ## Detector
+
+Các kiểm tra dưới đây chạy với opencv-python 5.0.0.93.
 
 - Preprocessing FP16 khớp từng phần tử với `ValTransform` của fork TrackTrack/ByteTrack trên ảnh thật (`scripts/check_yolox_transform.py`).
 - Adapter YOLOX-X chạy GPU trên 4 frame thật, so với cache val: offsets, mask và box giống nhau; confidence lệch tối đa khoảng 0,00049. Inference mới vì vậy không bảo đảm giống từng bit với cache cũ; dùng chính cache cũ khi cần lặp lại đúng input.

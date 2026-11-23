@@ -153,7 +153,8 @@ Các biến thể bị loại trên val:
 | OC-SORT | 53,27 | 58,93 | 49,17 | 65,50 | 75,55 | 97 | 1 603 | 26 194 |
 | DIP | 51,28 | 61,15 | 44,25 | 58,05 | 77,10 | 258 | 7 028 | 18 845 |
 
-Baseline: số từ bảng so sánh của nhóm, chạy code gốc với cấu hình mặc định MOT17 và FastReID trên cùng detection cache.
+Baseline dùng tham số mặc định của cấu hình MOT17 trên cùng detection YOLOX-X. Sáu baseline có ReID (TrackTrack, Hybrid-SORT,
+BoT-SORT, DiffMOT, Deep OC-SORT, DIP) dùng FastReID SBS-S50; ByteTrack, OC-SORT và Ex-Sort không dùng ReID.
 Các baseline không được tune trên val GlareMOT, còn Ex-Sort thì có.
 
 So với TrackTrack:
